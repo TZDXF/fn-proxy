@@ -15,6 +15,7 @@ const {
   connection,
   proxy,
   discovered,
+  inventory,
   probes,
   editor,
   editing,
@@ -557,6 +558,69 @@ const time = (n: number) => new Date(n).toLocaleTimeString("zh-CN", { hour12: fa
                 }}
               </button>
             </div>
+          </section>
+          <section v-if="inventory" class="card inventory-card">
+            <div class="compact-heading">
+              <div>
+                <h2>当前账号完整入口清单</h2>
+                <p>保留未映射入口，明确区分“已注册”与“实际可达”。</p>
+              </div>
+              <span class="badge">{{ inventory.totalEntries }} 个可见入口</span>
+            </div>
+            <div class="inventory-summary">
+              <span
+                >有远程配对 <strong>{{ inventory.mappedEntries }}</strong></span
+              >
+              <span
+                >独立服务 <strong>{{ inventory.services.length }}</strong></span
+              >
+              <span
+                >无法建立端口代理 <strong>{{ inventory.unmappedEntries }}</strong></span
+              >
+            </div>
+            <p class="inventory-scope"><Icon name="info" :size="16" />{{ inventory.scope }}</p>
+            <details class="inventory-details">
+              <summary>查看全部入口、端口、子域名及未映射原因</summary>
+              <div class="inventory-table-wrap">
+                <table class="inventory-table">
+                  <thead>
+                    <tr>
+                      <th>入口</th>
+                      <th>NAS 端口</th>
+                      <th>服务子域名前缀 / 路径</th>
+                      <th>映射状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="entry in inventory.entries" :key="entry.id">
+                      <td>{{ entry.name }}</td>
+                      <td>
+                        <code>{{ entry.nasPort ?? "—" }}</code>
+                      </td>
+                      <td>
+                        <code>{{ entry.fnDomain ?? "未提供有效子域名" }}</code>
+                        <span v-if="entry.path" class="inventory-path">{{ entry.path }}</span>
+                      </td>
+                      <td>
+                        <span :class="['badge', { success: entry.status === 'mapped' }]">{{
+                          entry.status === "mapped"
+                            ? "已注册，待测试"
+                            : entry.status === "no-port"
+                              ? "无独立端口"
+                              : entry.status === "no-domain"
+                                ? "缺少远程子域名"
+                                : "不安全的域名"
+                        }}</span>
+                        <span class="inventory-reason">{{ entry.reason }}</span>
+                      </td>
+                    </tr>
+                    <tr v-if="!inventory.entries.length">
+                      <td colspan="4">当前账号没有可见入口。</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
           </section>
           <section class="card usage-card">
             <div class="compact-heading">

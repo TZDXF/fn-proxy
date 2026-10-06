@@ -1,7 +1,7 @@
 use crate::{
     error::{error, Result},
     resolver::{browser_client, millis, BROWSER_UA},
-    types::{validate_upstream, ConnectionInfo, DiscoveredService},
+    types::{ConnectionInfo, DiscoveredService},
 };
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
@@ -327,7 +327,7 @@ impl NasSession {
             info,
         }))
     }
-    pub async fn discover(&self) -> Result<Vec<DiscoveredService>> {
+    pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {
         let entries = self
             .rpc
             .lock()
@@ -338,7 +338,10 @@ impl NasSession {
                 false,
             )
             .await?;
-        Ok(parse_entries(&entries, &self.info.fn_id))
+        crate::inventory::parse_inventory(&entries, &self.info.fn_id)
+    }
+    pub async fn discover(&self) -> Result<Vec<DiscoveredService>> {
+        Ok(self.inventory().await?.services)
     }
     pub async fn refresh_entry_token(&self) -> Result<()> {
         let previous = self.entry_token.read().await.to_string();
@@ -364,42 +367,11 @@ impl NasSession {
     }
 }
 use sha2::Digest;
+#[cfg(test)]
 pub fn parse_entries(value: &Value, fn_id: &str) -> Vec<DiscoveredService> {
-    let mut services = Vec::new();
-    let Some(entries) = value["data"]["list"].as_array() else {
-        return services;
-    };
-    for entry in entries {
-        let uri = &entry["uri"];
-        let port = uri["port"]
-            .as_u64()
-            .or_else(|| uri["port"].as_str().and_then(|s| s.parse().ok()));
-        let Some(port) = port.and_then(|n| u16::try_from(n).ok()).filter(|p| *p != 0) else {
-            continue;
-        };
-        let Some(domain) = uri["fnDomain"].as_str().filter(|s| !s.is_empty()) else {
-            continue;
-        };
-        let upstream = format!("https://{domain}.{fn_id}.fnos.net/");
-        if validate_upstream(&upstream, fn_id).is_err() {
-            continue;
-        }
-        if services
-            .iter()
-            .any(|s: &DiscoveredService| s.upstream == upstream && s.nas_port == port)
-        {
-            continue;
-        }
-        services.push(DiscoveredService {
-            id: entry["entryKey"].as_str().unwrap_or(domain).to_owned(),
-            name: entry["title"].as_str().unwrap_or("NAS 服务").to_owned(),
-            nas_port: port,
-            upstream,
-            fn_domain: domain.to_owned(),
-            source: "NAS 入口列表 uri.port ↔ uri.fnDomain".to_owned(),
-        });
-    }
-    services
+    crate::inventory::parse_inventory(value, fn_id)
+        .map(|report| report.services)
+        .unwrap_or_default()
 }
 #[cfg(test)]
 mod tests {

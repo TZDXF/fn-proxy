@@ -1,6 +1,7 @@
 mod auth;
 mod commands;
 mod error;
+mod inventory;
 mod proxy;
 mod resolver;
 mod storage;
@@ -28,6 +29,7 @@ pub fn run() {
             commands::save_login,
             commands::forget_login,
             commands::discover_services,
+            commands::get_service_inventory,
             commands::probe_service,
             commands::refresh_session,
             commands::start_proxy,

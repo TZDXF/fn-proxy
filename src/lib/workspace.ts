@@ -12,6 +12,7 @@ import {
   type ConnectionInfo,
   type ProxyStatus,
   type DiscoveredService,
+  type ServiceInventory,
   type ServiceRoute,
   type LogEntry,
   type RouteProbe,
@@ -37,7 +38,8 @@ export function useWorkspace() {
   const section = ref<"overview" | "services" | "protocol" | "logs">("overview");
   const busy = ref("");
   const notice = ref<{ message: string; error: boolean } | null>(null);
-  const discovered = ref<DiscoveredService[]>([]);
+  const inventory = ref<ServiceInventory | null>(null);
+  const discovered = computed(() => inventory.value?.services ?? []);
   const logs = ref<LogEntry[]>([]);
   const connection = ref<ConnectionInfo>({
     connected: false,
@@ -102,6 +104,7 @@ export function useWorkspace() {
       profile.fnId = normalizeFnId(profile.fnId);
       if (!profile.username.trim()) throw new Error("请输入 NAS 用户名");
       if (!password.value && !hasSavedPassword.value) throw new Error("请输入 NAS 密码");
+      inventory.value = null;
       connection.value = await invoke<ConnectionInfo>("connect_nas", {
         input: {
           fnId: profile.fnId,
@@ -145,17 +148,17 @@ export function useWorkspace() {
   async function disconnect() {
     await run("正在断开", async () => {
       await invoke("disconnect_nas");
+      inventory.value = null;
       await refresh();
       notify("连接和本地代理已停止。");
     });
   }
   async function discover() {
-    await run("读取服务映射", async () => {
-      discovered.value = await invoke<DiscoveredService[]>("discover_services");
+    await run("读取完整入口清单", async () => {
+      inventory.value = null;
+      inventory.value = await invoke<ServiceInventory>("get_service_inventory");
       notify(
-        discovered.value.length
-          ? `读取到 ${discovered.value.length} 个带有远程域名的服务入口。`
-          : "未找到可远程访问的端口入口。可手动添加已有 FN Connect 服务地址。",
+        `当前账号可见 ${inventory.value.totalEntries} 个入口，${discovered.value.length} 个独立端口服务，${inventory.value.unmappedEntries} 个入口无法建立端口映射。`,
       );
       section.value = "services";
     });
@@ -312,6 +315,7 @@ export function useWorkspace() {
     busy,
     notice,
     discovered,
+    inventory,
     logs,
     connection,
     proxy,

@@ -343,6 +343,18 @@ pub async fn discover_services(state: State<'_, Arc<AppState>>) -> Result<Vec<Di
     session.discover().await
 }
 #[tauri::command]
+pub async fn get_service_inventory(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::types::ServiceInventory> {
+    let session = state
+        .session
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| error("请先登录 NAS"))?;
+    session.inventory().await
+}
+#[tauri::command]
 pub async fn probe_service(
     state: State<'_, Arc<AppState>>,
     route: ServiceRoute,

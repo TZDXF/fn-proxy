@@ -44,6 +44,24 @@ export interface DiscoveredService {
   fnDomain: string;
   source: string;
 }
+export interface InventoryEntry {
+  id: string;
+  name: string;
+  nasPort: number | null;
+  fnDomain: string | null;
+  upstream: string | null;
+  path: string | null;
+  status: "mapped" | "no-port" | "no-domain" | "invalid-domain";
+  reason: string;
+}
+export interface ServiceInventory {
+  totalEntries: number;
+  mappedEntries: number;
+  unmappedEntries: number;
+  services: DiscoveredService[];
+  entries: InventoryEntry[];
+  scope: string;
+}
 export interface LogEntry {
   time: number;
   level: "info" | "success" | "warn" | "error";

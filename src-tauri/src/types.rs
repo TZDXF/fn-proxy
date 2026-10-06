@@ -39,6 +39,28 @@ pub struct DiscoveredService {
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InventoryEntry {
+    pub id: String,
+    pub name: String,
+    pub nas_port: Option<u16>,
+    pub fn_domain: Option<String>,
+    pub upstream: Option<String>,
+    pub path: Option<String>,
+    pub status: String,
+    pub reason: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceInventory {
+    pub total_entries: usize,
+    pub mapped_entries: usize,
+    pub unmapped_entries: usize,
+    pub services: Vec<DiscoveredService>,
+    pub entries: Vec<InventoryEntry>,
+    pub scope: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
     pub profile: Profile,
     pub has_saved_password: bool,

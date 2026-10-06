@@ -30,17 +30,17 @@ npm run desktop:build
 ## 本次实现的验证状态
 
 - 前端：Oxlint、Vue/TypeScript 类型检查、5 项单元测试、Oxfmt 和 Vite 生产构建通过。
-- Rust：16 项离线测试通过，覆盖加密认证、会话维护与 HTTP/WebSocket 本地代理；Clippy 全 target 检查通过。
+- Rust：19 项离线测试通过，覆盖加密认证、会话维护与 HTTP/WebSocket 本地代理；Clippy 全 target 检查通过。
 - 已完成目标 NAS 的只读 FN ID 解析、HTTPS 入口握手与远程 WebSocket RSA 公钥握手，未发送真实用户名或密码。
 - 真实账号自动登录、服务入口列表权限及真实业务 API 尚待用户在桌面应用内验证；模拟测试不替代真实环境验收。
 
-本机调试版可执行文件：`src-tauri/target/debug/fn-proxy.exe`。使用 `tauri build --debug --no-bundle` 构建的版本内嵌界面资源，可以直接启动，不要求 Vite 常驻；后续 `tauri dev` 会重新构建开发版，此时使用 `npm run desktop:dev` 启动。
+本机调试版可执行文件：`src-tauri/target/debug/fn-proxy.exe`。使用 `tauri build --debug --no-bundle` 构建的版本内嵌界面资源，可以直接启动，不要求 Vite 常驻；源码更新后需要重新构建；如果旧版应用正在运行，请先关闭窗口，再执行 `npm run desktop:dev`。后续 `tauri dev` 会重新构建开发版，此时使用 `npm run desktop:dev` 启动。
 
 ## 使用流程
 
 1. 输入 FN ID（不带 `.fnos.net`）、NAS 本地用户名和密码，点击 **测试并登录**。
 2. 如账号启用 TOTP，展开二次验证输入六位验证码；需要首次绑定的账号请先在 NAS 网页完成绑定。
-3. 点击 **从 NAS 读取**，获取服务入口的 `uri.port` 和 `uri.fnDomain`，选择需要代理的服务。
+3. 点击 **从 NAS 读取**，获取当前账号的完整入口清单及 `uri.port` 和 `uri.fnDomain` 配对，选择需要代理的服务。清单同时保留缺少端口或远程子域名的入口，并显示未映射原因；已注册入口不等于实际可达。
 4. 或手动填写现有的 FN Connect 服务根地址、NAS 服务端口与本地端口。
 5. 需要持久化密码时勾选安全保存，再点击 **保存登录**。密码写入 Windows 凭据管理器；配置文件不包含密码或 Token。可选启动时自动登录。
 6. 点击 **启用代理**。每个已启用服务创建一个仅监听 `127.0.0.1` 的独立 HTTP 端口。
@@ -105,7 +105,7 @@ FN ID 解析
 }
 ```
 
-远程入口按 `https://{fnDomain}.{NAS 主域名}{path}` 拼接。应用调用 `appcgi.sac.entry.v1.getEntryList` 读取配对，不猜测域名、不进行端口扫描，也不在 NAS 上创建或修改入口。
+远程入口按 `https://{fnDomain}.{NAS 主域名}{path}` 拼接。应用调用 `appcgi.sac.entry.v1.getEntryList` 读取配对，不猜测域名、不进行端口扫描，也不在 NAS 上创建或修改入口。当前清单按登录账号权限显示，不承诺涵盖 NAS 所有监听端口；详见 [完整端口/子域名发现调查](docs/service-discovery.md)。
 
 没有 `fnDomain` 的独立端口，不会仅因填写端口而获得 FN Connect 转发能力。需要 NAS 先提供可访问的服务入口，或使用你已经确认的服务远程地址。`nasPort` 在手动映射中是说明字段，真正的远程目标由已验证的服务域名决定。
 
@@ -148,6 +148,7 @@ Remove-Item Env:FN_PROXY_TEST_ID
 src/                      Vue 界面、状态管理与前端测试
 src-tauri/src/auth.rs     NAS 加密认证、RPC、服务映射读取
 src-tauri/src/resolver.rs FN ID 解析与远程入口 HTTP 客户端
+src-tauri/src/inventory.rs 完整可见入口清单、映射分类与解析测试
 src-tauri/src/proxy.rs    loopback HTTP / SSE / WebSocket 代理
 src-tauri/src/commands.rs 桌面命令、会话维护和代理生命周期
 src-tauri/src/storage.rs  无秘密的配置与 Windows 凭据管理器

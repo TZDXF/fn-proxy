@@ -93,7 +93,7 @@ if (isFnConnect && uri.fnDomain && uri.port) {
 
 **结论：应用应读取服务端提供的 `uri.port ↔ uri.fnDomain` 配对。** 当前没有足够证据证明 `fnDomain` 的哈希前缀或数字后缀可自行计算。新端口能否被中继访问由 NAS 入口注册及 FN Connect 规则决定，不由本机代理填写一个端口决定。
 
-当前版本只自动添加包含有效端口与远程前缀的入口；其余入口忽略。手动添加域名需要属于当前 NAS。读取接口是只读的，不调用应用安装、入口编辑、域名注册或系统设置接口。
+当前版本的完整入口清单保留所有返回条目，并明确显示无端口、无远程前缀或不安全域名的原因；只有有效端口与远程前缀配对才能添加为代理映射。手动添加域名需要属于当前 NAS。读取接口是只读的，不调用应用安装、入口编辑、域名注册或系统设置接口。
 
 ## 6. 未验证事项
 
@@ -111,3 +111,9 @@ if (isFnConnect && uri.fnDomain && uri.port) {
 - https://fnnas.com/fn-connect
 
 官方 CGI / 统一网关入口和本文的服务子域名代理是相关但不同的访问模型；不能把统一网关 Header 当成 entry-token 的替代品，也不能将 NAS 本地开放 API 的 TRIM_API_TOKEN 当成远程登录凭据。
+
+## 7. 完整清单调查补充
+
+2026-10-06 继续检查公开前端后，确认 `getUserDesktop` 是桌面布局/分组列表，不能替代 `getEntryList` 枚举可见入口；`appcgi.netsvr.domain.list` 在 FN ID 设置中用于域名后缀选择，也不是服务端口映射表。没有确认能够返回 NAS 所有监听端口与远程域名的全局接口。
+
+应用新增 `get_service_inventory` 桌面命令：调用已确认的只读 `getEntryList`，返回当前账号全部可见入口、映射/未映射原因、独立服务去重结果。详细来源、候选接口与覆盖范围见 [完整端口/子域名发现调查](service-discovery.md)。

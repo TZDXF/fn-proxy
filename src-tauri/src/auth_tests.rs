@@ -129,7 +129,7 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
                 json!({"reqid":id,"result":"suc","data":{"token":"fixture-entry-token"}})
             }
             "appcgi.sac.entry.v1.getEntryList" => {
-                json!({"reqid":id,"result":"suc","data":{"list":[{"entryKey":"fixture-app","title":"Fixture service","uri":{"port":"8084","fnDomain":"fixture-0"}}]}})
+                json!({"reqid":id,"result":"suc","data":{"list":[{"entryKey":"fixture-app","title":"Fixture service","uri":{"port":"8084","fnDomain":"fixture-0"}},{"entryKey":"fixture-local","title":"Local-only fixture","uri":{"port":"9090"}},{"entryKey":"fixture-builtin","title":"Builtin fixture","uri":{"path":"/app/fixture"}}]}})
             }
             method => panic!("unexpected mock RPC: {method}"),
         };
@@ -171,6 +171,12 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     .unwrap();
     assert_eq!(session.info.auth_mode, "ticket-cookie");
     assert_eq!(&**session.entry_token.read().await, "fixture-entry-token");
+    let inventory = session.inventory().await.unwrap();
+    assert_eq!(inventory.total_entries, 3);
+    assert_eq!(inventory.mapped_entries, 1);
+    assert_eq!(inventory.unmapped_entries, 2);
+    assert_eq!(inventory.entries[1].status, "no-domain");
+    assert_eq!(inventory.entries[2].status, "no-port");
     let services = session.discover().await.unwrap();
     assert_eq!(services[0].nas_port, 8084);
     assert_eq!(services[0].fn_domain, "fixture-0");
