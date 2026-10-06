@@ -1,0 +1,43 @@
+mod auth;
+mod commands;
+mod error;
+mod proxy;
+mod resolver;
+mod storage;
+mod types;
+use std::sync::Arc;
+use tauri::Manager;
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let path = app.path().app_config_dir()?.join("profile.json");
+            let profile = storage::load_profile(&path).unwrap_or_default();
+            let state = Arc::new(commands::AppState::new(path, profile));
+            app.manage(state.clone());
+            commands::auto_connect(app.handle().clone(), state);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_bootstrap,
+            commands::get_snapshot,
+            commands::get_logs,
+            commands::connect_nas,
+            commands::disconnect_nas,
+            commands::save_login,
+            commands::forget_login,
+            commands::discover_services,
+            commands::probe_service,
+            commands::refresh_session,
+            commands::start_proxy,
+            commands::stop_proxy
+        ])
+        .build(tauri::generate_context!())
+        .expect("FN Proxy startup failed");
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            commands::shutdown(handle);
+        }
+    });
+}

@@ -1,0 +1,40 @@
+{
+  "name": "fn-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint",
+    "typecheck": "vue-tsc --noEmit",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "preview": "vite preview",
+    "format": "oxfmt",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "test": "vitest run",
+    "desktop:build": "tauri build",
+    "dev": "vite",
+    "rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "build": "vue-tsc --noEmit && vite build",
+    "format:check": "oxfmt --check",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run format:check"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.4",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.1",
+    "vue-tsc": "^3.3.5"
+  }
+}

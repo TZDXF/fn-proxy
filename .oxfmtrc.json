@@ -1,0 +1,12 @@
+{
+  "semi": true,
+  "singleQuote": false,
+  "printWidth": 100,
+  "ignorePatterns": [
+    "dist/**",
+    "src-tauri/target/**",
+    ".scaffold/**",
+    "package-lock.json",
+    "src-tauri/Cargo.lock"
+  ]
+}

@@ -1,0 +1,52 @@
+[package]
+name = "fn-proxy"
+version = "0.1.0"
+description = "FN Connect authenticated local reverse proxy"
+authors = ["FN Proxy contributors"]
+edition = "2021"
+
+[lib]
+name = "fn_proxy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "json",
+  "cookies",
+  "stream",
+] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+url = "2"
+regex = "1"
+thiserror = "2"
+sha2 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"
+hex = "0.4"
+zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
