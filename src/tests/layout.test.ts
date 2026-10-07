@@ -3,14 +3,20 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
-function rule(selector: string) {
+function rule(selector: string, source = css) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+  const match = source.replace(/\r\n/g, "\n").match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
   expect(match, `Missing CSS rule: ${selector}`).not.toBeNull();
   return match![1]!;
 }
 
 describe("application scroll layout", () => {
+  it("matches multi-line selectors with LF and CRLF checkouts", () => {
+    const lf = css.replace(/\r\n/g, "\n");
+    const crlf = lf.replace(/\n/g, "\r\n");
+    expect(rule("html,\nbody,\n#app", crlf)).toBe(rule("html,\nbody,\n#app", lf));
+  });
+
   it("prevents document scrolling across the fixed titlebar", () => {
     const root = rule("html,\nbody,\n#app");
     expect(root).toMatch(/height:\s*100%;/);
