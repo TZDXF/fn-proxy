@@ -197,5 +197,26 @@
     "notPublished": "No host port",
     "unsupportedProtocol": "Unsupported protocol",
     "ambiguous": "Ambiguous association"
+  },
+  "updates": {
+    "title": "Version & updates",
+    "description": "Check stable releases on GitHub without sending NAS accounts or credentials.",
+    "currentVersion": "Current version",
+    "check": "Check for updates",
+    "checking": "Checking for updates…",
+    "idle": "Check for updates to find the latest stable release.",
+    "available": "Version {version} is available. Visit the release page to download and install it.",
+    "upToDate": "You are up to date (latest stable release: {version}).",
+    "noRelease": "No stable release has been published yet.",
+    "releasePage": "Open release page",
+    "download": "Download update",
+    "manualInstall": "Updates require manual download and installation. The app will not be replaced automatically.",
+    "preview": "Update checks are unavailable in browser preview. Please use the desktop app.",
+    "versionError": "Could not read the app version. Try checking for updates again.",
+    "networkError": "Could not check for updates. Check your network and try again.",
+    "rateLimited": "GitHub rate limit reached. Try again later or open the release page directly.",
+    "invalidResponse": "Invalid release information. Please visit the release page.",
+    "unexpectedResponse": "GitHub is temporarily unavailable. Please try again later.",
+    "openError": "Could not open the release page. Please try again."
   }
 }

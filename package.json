@@ -19,7 +19,8 @@
     "rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "build": "vue-tsc --noEmit && vite build",
     "format:check": "oxfmt --check",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run format:check"
+    "check": "npm run lint && npm run typecheck && npm run test && npm run format:check",
+    "release:check": "node scripts/check-release-version.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -10,6 +10,7 @@ mod resolver;
 mod service_sync;
 mod storage;
 mod types;
+mod updates;
 use std::sync::Arc;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,6 +32,7 @@ pub fn run() {
             desktop::on_window_event(window, event);
         })
         .invoke_handler(tauri::generate_handler![
+            updates::check_for_updates,
             commands::get_bootstrap,
             commands::set_allow_lan_access,
             commands::get_snapshot,

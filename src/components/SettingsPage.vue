@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
+import { createUpdates } from "../lib/updates";
+import UiButton from "./ui/UiButton.vue";
 import { useI18n } from "vue-i18n";
 import Icon from "./Icon.vue";
 import UiSelect from "./ui/UiSelect.vue";
@@ -14,6 +16,9 @@ const emit = defineEmits<{ "update:allowLanAccess": [value: boolean] }>();
 import { preferences, type AppLocale, type ThemeMode } from "../lib/preferences";
 
 const { t } = useI18n({ useScope: "global" });
+const updates = createUpdates();
+const { version, state, latest, errorKey, checking, opening, openFailed, versionFailed } = updates;
+onMounted(() => void updates.initialize());
 const { locale, theme, resolvedTheme } = preferences;
 const languages = [
   { value: "zh-CN", label: "简体中文" },
@@ -134,6 +139,83 @@ function selectTheme(event: Event) {
         {{ t("settings.currentTheme", { theme: t(`settings.${resolvedTheme}`) }) }}
       </p>
     </section>
+    <section class="panel settings-panel" aria-labelledby="updates-heading">
+      <div class="panel-heading settings-panel-heading">
+        <span class="settings-icon"><Icon name="info" :size="21" /></span>
+        <div>
+          <h2 id="updates-heading">{{ t("updates.title") }}</h2>
+          <p>{{ t("updates.description") }}</p>
+        </div>
+      </div>
+      <div class="settings-language-row update-version-row">
+        <span>{{ t("updates.currentVersion") }}</span>
+        <strong>{{ version ? "v" + version : t("common.reading") }}</strong>
+      </div>
+      <div class="update-content">
+        <div class="update-actions">
+          <UiButton
+            variant="primary"
+            :disabled="checking || !updates.desktop"
+            @click="updates.check"
+          >
+            <Icon name="refresh" :size="16" />
+            {{ t(checking ? "updates.checking" : "updates.check") }}
+          </UiButton>
+          <UiButton :disabled="opening" @click="updates.openRelease">
+            <Icon name="external" :size="16" />
+            {{ t(state === "available" ? "updates.download" : "updates.releasePage") }}
+          </UiButton>
+        </div>
+        <p class="update-status" role="status" aria-live="polite">
+          {{
+            !updates.desktop
+              ? t("updates.preview")
+              : state === "failed"
+                ? t(errorKey)
+                : t(`updates.${state}`, { version: latest?.latestVersion ?? "" })
+          }}
+        </p>
+        <p v-if="versionFailed" class="update-error" role="alert">
+          {{ t("updates.versionError") }}
+        </p>
+        <p v-if="openFailed" class="update-error" role="alert">{{ t("updates.openError") }}</p>
+        <p class="update-hint">{{ t("updates.manualInstall") }}</p>
+      </div>
+    </section>
     <p class="settings-saved"><Icon name="check" :size="16" />{{ t("settings.saved") }}</p>
   </div>
 </template>
+
+<style scoped>
+.update-version-row {
+  padding-bottom: 12px;
+}
+.update-version-row strong {
+  color: var(--text);
+}
+.update-content {
+  padding: 0 24px 24px;
+}
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.update-status,
+.update-hint,
+.update-error {
+  font-size: 12px;
+  line-height: 1.7;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.update-status {
+  color: var(--text-secondary);
+}
+.update-hint {
+  color: var(--text-muted);
+}
+.update-error {
+  color: var(--danger);
+}
+</style>
