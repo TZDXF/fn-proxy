@@ -521,37 +521,42 @@ pub async fn disconnect_nas(
     state.log(&app, "info", "已断开当前连接并停止其代理监听");
     Ok(())
 }
-#[tauri::command]
-pub async fn save_login(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
+async fn persist_login_profile(
+    manager: &AppState,
     connection_id: String,
     mut profile: Profile,
-) -> Result<()> {
-    let manager = state.inner().clone();
+    password: Option<String>,
+) -> Result<bool> {
+    // Wrap submitted secrets before validation so all return paths zeroize them.
+    let password = password.filter(|p| !p.is_empty()).map(Zeroizing::new);
     let _workspace_guard = manager.operation.lock().await;
-    let state = manager.connection(&connection_id)?;
-
+    let state = manager.ensure_connection(&connection_id)?;
     let _guard = state.operation.lock().await;
     profile.id = connection_id;
     profile.fn_id = normalize_fnid(&profile.fn_id)?;
     profile.username = profile.username.trim().to_owned();
+    if profile.username.is_empty() {
+        return Err(error("请输入 NAS 用户名"));
+    }
     validate_routes(&profile.services, &profile.fn_id)?;
+    if profile.auto_connect && !profile.remember {
+        return Err(error("启动时自动登录需要先选择安全保存密码"));
+    }
     let credentials = state
         .credentials
         .lock()
         .await
         .clone()
-        .ok_or_else(|| error("请先测试连接成功，再保存登录"))?;
-    if credentials.fn_id != profile.fn_id || credentials.username != profile.username {
-        return Err(error("当前表单与已登录账号不一致，请重新测试连接"));
-    }
-    if profile.auto_connect && !profile.remember {
-        return Err(error("启动时自动登录需要先选择安全保存密码"));
-    }
+        .filter(|credentials| {
+            credentials.fn_id == profile.fn_id && credentials.username == profile.username
+        });
     let previous = state.profile();
     if profile.remember {
-        storage::store_password(&profile.fn_id, &profile.username, &credentials.password)?;
+        let password = password
+            .or_else(|| credentials.as_ref().map(|c| c.password.clone()))
+            .or_else(|| storage::saved_password(&profile.fn_id, &profile.username).ok())
+            .ok_or_else(|| error("请输入要保存的密码，或取消保存密码"))?;
+        storage::store_password(&profile.fn_id, &profile.username, &password)?;
     } else if !manager.password_used_by_other(&profile) {
         storage::delete_password(&profile.fn_id, &profile.username)?;
     }
@@ -564,15 +569,30 @@ pub async fn save_login(
         let _ = storage::delete_password(&previous.fn_id, &previous.username);
     }
     if let Some(current) = state.credentials.lock().await.as_mut() {
-        current.remember = profile.remember;
+        if current.fn_id == profile.fn_id && current.username == profile.username {
+            current.remember = profile.remember;
+        }
     }
+    let password_saved = profile.remember;
     *state.profile.lock().unwrap() = profile;
-    state.log(
+    Ok(password_saved)
+}
+#[tauri::command]
+pub async fn save_login(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    profile: Profile,
+    password: Option<String>,
+) -> Result<bool> {
+    let password_saved =
+        persist_login_profile(state.inner(), connection_id.clone(), profile, password).await?;
+    state.connection(&connection_id)?.log(
         &app,
         "success",
-        "登录配置已保存；密码仅保存到 Windows 凭据管理器",
+        "连接配置已保存，未发起连接；密码仅保存到 Windows 凭据管理器",
     );
-    Ok(())
+    Ok(password_saved)
 }
 #[tauri::command]
 pub async fn forget_login(
@@ -994,6 +1014,64 @@ mod tests {
                 ],
             },
         )
+    }
+    #[tokio::test]
+    async fn saves_a_new_connection_without_credentials_or_a_session() {
+        let manager = manager();
+        let profile = Profile {
+            id: "draft".to_owned(),
+            fn_id: "  NAS-C  ".to_owned(),
+            username: format!(" fn-proxy-test-{} ", rand::random::<u64>()),
+            ..Default::default()
+        };
+        assert!(
+            !persist_login_profile(&manager, "draft".to_owned(), profile, None)
+                .await
+                .unwrap()
+        );
+        let state = manager.connection("draft").unwrap();
+        assert!(*state.saved.lock().unwrap());
+        assert_eq!(state.profile().fn_id, "nas-c");
+        assert_eq!(state.profile().username, state.profile().username.trim());
+        assert!(!state.info.read().unwrap().connected);
+        assert!(state.session.read().await.is_none());
+        assert!(state.credentials.lock().await.is_none());
+        assert!(state.monitor.lock().await.is_none());
+        let workspace = storage::load_profiles(&manager.profile_path).unwrap();
+        assert_eq!(workspace.profiles.len(), 3);
+        assert!(workspace.profiles.iter().any(|p| p.id == "draft"));
+        let _ = std::fs::remove_file(&manager.profile_path);
+    }
+    #[tokio::test]
+    async fn saves_an_existing_disconnected_connection_without_logging_in() {
+        let manager = manager();
+        let mut profile = manager.connection("first").unwrap().profile();
+        profile.username = format!("fn-proxy-test-{}", rand::random::<u64>());
+        persist_login_profile(&manager, "first".to_owned(), profile.clone(), None)
+            .await
+            .unwrap();
+        let state = manager.connection("first").unwrap();
+        assert_eq!(state.profile().username, profile.username);
+        assert!(!state.info.read().unwrap().connected);
+        assert!(state.session.read().await.is_none());
+        assert!(state.credentials.lock().await.is_none());
+        assert_eq!(
+            storage::load_profiles(&manager.profile_path)
+                .unwrap()
+                .profiles
+                .len(),
+            2
+        );
+        let _ = std::fs::remove_file(&manager.profile_path);
+    }
+    #[tokio::test]
+    async fn saving_rejects_a_blank_username_without_persisting() {
+        let manager = manager();
+        let mut profile = manager.connection("first").unwrap().profile();
+        profile.username = "  ".to_owned();
+        let result = persist_login_profile(&manager, "first".to_owned(), profile, None).await;
+        assert!(result.unwrap_err().to_string().contains("用户名"));
+        assert!(!manager.profile_path.exists());
     }
     #[tokio::test]
     async fn connections_have_independent_sessions_counters_and_listeners() {

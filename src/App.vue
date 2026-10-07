@@ -29,6 +29,7 @@ const {
   otp,
   showPassword,
   hasSavedPassword,
+  connecting,
   section,
   busy,
   notice,
@@ -84,6 +85,7 @@ function newConnection() {
   connectionDialog.value = true;
 }
 function editConnection(id: string) {
+  if (busy.value) return;
   selectedConnectionId.value = id;
   connectionBackup.value = cloneProfile(profile.value);
   connectionDialog.value = true;
@@ -104,22 +106,47 @@ watch(connectionDialog, async (open) => {
   }
 });
 async function saveConnection() {
-  if (!w.formMatchesSession.value && !(await w.connect())) return;
   if (await w.save()) {
     connectionBackup.value = null;
     connectionDialog.value = false;
   }
 }
+async function connectConnection(id: string) {
+  if (busy.value) return;
+  selectConnection(id);
+  notice.value = null;
+  if (!hasSavedPassword.value) {
+    editConnection(id);
+    return;
+  }
+  const originSection = section.value;
+  if (
+    !(await w.connect(id)) &&
+    selectedConnectionId.value === id &&
+    section.value === originSection &&
+    !connectionDialog.value
+  )
+    editConnection(id);
+}
 function selectConnection(id: string) {
   if (!busy.value) selectedConnectionId.value = id;
 }
 async function toggleConnectionProxy(id: string) {
+  if (busy.value) return;
+  const target = w.connections.find((c) => c.profile.id === id);
+  if (!target || target.connecting) return;
   selectConnection(id);
-  if (!proxy.value.running && !w.formMatchesSession.value && !(await w.connect())) {
-    editConnection(id);
+  const originSection = section.value;
+  if (!target.proxy.running && !w.formMatchesSession.value && !(await w.connect(id))) {
+    if (
+      selectedConnectionId.value === id &&
+      section.value === originSection &&
+      !connectionDialog.value
+    )
+      editConnection(id);
     return;
   }
-  await w.toggleProxy();
+  await w.toggleProxy(id);
 }
 function showServices(id: string) {
   selectConnection(id);
@@ -354,11 +381,14 @@ async function confirmDelete() {
                     <td>
                       <div class="row-actions">
                         <UiButton
+                          v-if="!c.connection.connected || c.connecting"
                           variant="ghost"
-                          :disabled="!!busy"
-                          @click="editConnection(c.profile.id)"
-                          >{{
-                            c.connection.connected ? t("common.edit") : t("nav.connections")
+                          :disabled="!!busy || c.connecting"
+                          :aria-busy="c.connecting"
+                          :aria-label="t('actions.connectConnection', { name: c.profile.fnId })"
+                          @click="connectConnection(c.profile.id)"
+                          ><Icon name="link" />{{
+                            c.connecting ? t("connection.connecting") : t("connection.connect")
                           }}</UiButton
                         ><UiButton
                           v-if="c.connection.connected"
@@ -369,6 +399,12 @@ async function confirmDelete() {
                             w.disconnect();
                           "
                           >{{ t("common.disconnect") }}</UiButton
+                        ><UiButton
+                          variant="ghost"
+                          :disabled="!!busy"
+                          :aria-label="t('actions.editConnection', { name: c.profile.fnId })"
+                          @click="editConnection(c.profile.id)"
+                          ><Icon name="edit" />{{ t("common.edit") }}</UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy"
@@ -632,9 +668,11 @@ async function confirmDelete() {
       </div>
       <div class="dialog-footer">
         <span v-if="connection.connected" class="badge success">{{ t("common.connected") }}</span
-        ><UiButton :disabled="!!busy || proxy.running" @click="w.connect()">{{
-          busy === "connect" ? t("connection.connecting") : t("connection.test")
-        }}</UiButton
+        ><UiButton
+          :disabled="!!busy || connecting || proxy.running"
+          :aria-busy="connecting"
+          @click="w.connect()"
+          >{{ connecting ? t("connection.connecting") : t("connection.test") }}</UiButton
         ><UiButton variant="primary" type="submit" :disabled="!!busy">{{
           busy === "save" ? t("common.saving") : t("connection.save")
         }}</UiButton>

@@ -198,6 +198,279 @@ describe("multiple connection workspaces", () => {
   });
 });
 
+describe("non-blocking background connections", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function setup() {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    Object.assign(w.profile.value, { fnId: "nas-a", username: "admin" });
+    w.password.value = "first-password";
+    const first = w.connections[0]!;
+    w.addConnection();
+    Object.assign(w.profile.value, { fnId: "nas-b", username: "admin" });
+    w.password.value = "second-password";
+    const second = w.connections[1]!;
+    w.selectedConnectionId.value = first.profile.id;
+    return { w, first, second };
+  }
+
+  it("does not hold the global busy lock and saves another connection while login is pending", async () => {
+    const { w, first, second } = setup();
+    const request = deferred<ConnectionInfo>();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return request.promise;
+      if (command === "get_snapshot") return { connections: [] };
+      if (command === "save_login") return false;
+    });
+    const connecting = w.connect();
+    expect(w.busy.value).toBe("");
+    expect(first.connecting).toBe(true);
+    expect(w.connecting.value).toBe(true);
+    w.selectedConnectionId.value = second.profile.id;
+    expect(w.connecting.value).toBe(false);
+    expect(await w.save()).toBe(true);
+    expect(w.savedConnections.value[0]!.profile.id).toBe(second.profile.id);
+    w.password.value = "new-second-password";
+    w.addConnection();
+    const draftId = w.selectedConnectionId.value;
+    request.resolve(info("nas-a"));
+    expect(await connecting).toBe(true);
+    expect(first.connection.fnId).toBe("nas-a");
+    expect(first.password).toBe("");
+    expect(first.connecting).toBe(false);
+    expect(second.connection.connected).toBe(false);
+    expect(second.password).toBe("new-second-password");
+    expect(w.selectedConnectionId.value).toBe(draftId);
+    expect(w.connections).toHaveLength(3);
+  });
+
+  it("connects different rows concurrently and applies out-of-order results to the correct row", async () => {
+    const { w, first, second } = setup();
+    const a = deferred<ConnectionInfo>();
+    const b = deferred<ConnectionInfo>();
+    mocks.invoke.mockImplementation(async (command: string, args?: { connectionId: string }) => {
+      if (command === "connect_nas")
+        return args?.connectionId === first.profile.id ? a.promise : b.promise;
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    const connectingA = w.connect(first.profile.id);
+    w.selectedConnectionId.value = second.profile.id;
+    const connectingB = w.connect();
+    expect(first.connecting).toBe(true);
+    expect(second.connecting).toBe(true);
+    expect(w.busy.value).toBe("");
+    b.resolve(info("nas-b"));
+    await connectingB;
+    expect(second.connection.fnId).toBe("nas-b");
+    expect(first.connection.connected).toBe(false);
+    expect(first.connecting).toBe(true);
+    a.resolve(info("nas-a"));
+    await connectingA;
+    expect(first.connection.fnId).toBe("nas-a");
+    expect(second.connection.fnId).toBe("nas-b");
+    expect(w.selectedConnectionId.value).toBe(second.profile.id);
+    expect(first.connecting).toBe(false);
+    expect(second.connecting).toBe(false);
+  });
+
+  it("ignores duplicate requests only for the same row", async () => {
+    const { w, first } = setup();
+    const request = deferred<ConnectionInfo>();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return request.promise;
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    const connecting = w.connect();
+    expect(await w.connect()).toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(first.connecting).toBe(true);
+    expect(w.busy.value).toBe("");
+    request.resolve(info("nas-a"));
+    await connecting;
+  });
+
+  it("does not erase new form input entered during a pending request", async () => {
+    const { w, first } = setup();
+    const request = deferred<ConnectionInfo>();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return request.promise;
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    w.otp.value = "old-otp";
+    const connecting = w.connect();
+    w.profile.value.username = "edited-admin";
+    w.password.value = "edited-password";
+    w.otp.value = "new-otp";
+    request.resolve(info("nas-a"));
+    await connecting;
+    expect(first.profile.username).toBe("edited-admin");
+    expect(first.password).toBe("edited-password");
+    expect(first.otp).toBe("new-otp");
+    expect(first.connection.username).toBe("admin");
+  });
+
+  it("releases the row indicator on failure and leaves the newly selected connection alone", async () => {
+    const { w, first, second } = setup();
+    const request = deferred<ConnectionInfo>();
+    mocks.invoke.mockReturnValue(request.promise);
+    const connecting = w.connect();
+    w.selectedConnectionId.value = second.profile.id;
+    request.reject(new Error("login failed"));
+    expect(await connecting).toBeUndefined();
+    expect(first.connecting).toBe(false);
+    expect(first.password).toBe("first-password");
+    expect(second.password).toBe("second-password");
+    expect(w.selectedConnectionId.value).toBe(second.profile.id);
+    expect(w.busy.value).toBe("");
+    expect(w.notice.value).toEqual({ message: "login failed", error: true });
+  });
+
+  it("does not apply a late result to a deleted row or its replacement", async () => {
+    const { w, first, second } = setup();
+    const request = deferred<ConnectionInfo>();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return request.promise;
+    });
+    const connecting = w.connect();
+    await w.removeConnection();
+    expect(w.selectedConnectionId.value).toBe(second.profile.id);
+    request.resolve(info("nas-a"));
+    expect(await connecting).toBeUndefined();
+    expect(first.connection.connected).toBe(false);
+    expect(second.connection.connected).toBe(false);
+    expect(second.password).toBe("second-password");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("get_snapshot");
+  });
+
+  it("closes a connecting draft without locking the page while backend cleanup waits", async () => {
+    const { w, first, second } = setup();
+    const request = deferred<ConnectionInfo>();
+    const cleanup = deferred<void>();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return request.promise;
+      if (command === "remove_connection") return cleanup.promise;
+    });
+    const connecting = w.connect();
+    const deleting = w.removeConnection(true);
+    expect(w.connections.some((c) => c.profile.id === first.profile.id)).toBe(false);
+    expect(w.selectedConnectionId.value).toBe(second.profile.id);
+    expect(w.busy.value).toBe("");
+    w.addConnection();
+    const newId = w.selectedConnectionId.value;
+    request.resolve(info("nas-a"));
+    expect(await connecting).toBeUndefined();
+    cleanup.resolve();
+    await deleting;
+    expect(w.selectedConnectionId.value).toBe(newId);
+    expect(w.busy.value).toBe("");
+    expect(w.notice.value).toBeNull();
+  });
+
+  it("does not resurrect state or issue notifications after unmount", async () => {
+    const { w, first } = setup();
+    const request = deferred<ConnectionInfo>();
+    mocks.invoke.mockReturnValue(request.promise);
+    const connecting = w.connect();
+    mocks.unmounted[0]!();
+    request.resolve(info("nas-a"));
+    expect(await connecting).toBeUndefined();
+    expect(first.connection.connected).toBe(false);
+    expect(first.connecting).toBe(false);
+    expect(w.notice.value).toBeNull();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the proxy for the explicitly requested connection after selection changes", async () => {
+    const { w, first, second } = setup();
+    first.connection = info("nas-a");
+    w.selectedConnectionId.value = second.profile.id;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "start_proxy") return { running: true, listeners: [], requests: 0 };
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    await w.toggleProxy(first.profile.id);
+    expect(mocks.invoke).toHaveBeenCalledWith("start_proxy", {
+      connectionId: first.profile.id,
+      services: [],
+    });
+    expect(first.proxy.running).toBe(true);
+    expect(second.proxy.running).toBe(false);
+    expect(w.selectedConnectionId.value).toBe(second.profile.id);
+  });
+});
+
+describe("saving connection configuration without connecting", () => {
+  it("saves a new disconnected connection without a password or login IPC", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockResolvedValue(false);
+    const w = useWorkspace();
+    w.profile.value.fnId = "  My-NAS  ";
+    w.profile.value.username = " admin ";
+    expect(await w.save()).toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke).toHaveBeenCalledWith("save_login", {
+      connectionId: w.selectedConnectionId.value,
+      profile: expect.objectContaining({ fnId: "my-nas", username: "admin", remember: false }),
+      password: null,
+    });
+    expect(w.savedConnections.value).toHaveLength(1);
+    expect(w.connection.value.connected).toBe(false);
+    expect(w.hasSavedPassword.value).toBe(false);
+  });
+
+  it("sends a remembered password separately and clears transient secrets after saving", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockResolvedValue(true);
+    const w = useWorkspace();
+    Object.assign(w.profile.value, { fnId: "my-nas", username: "admin", remember: true });
+    w.password.value = "new-password";
+    w.otp.value = "123456";
+    expect(await w.save()).toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    const payload = mocks.invoke.mock.calls[0]![1];
+    expect(payload.password).toBe("new-password");
+    expect(payload.profile).not.toHaveProperty("password");
+    expect(payload).not.toHaveProperty("otp");
+    expect(w.hasSavedPassword.value).toBe(true);
+    expect(w.password.value).toBe("");
+    expect(w.otp.value).toBe("");
+    expect(w.connection.value.connected).toBe(false);
+  });
+
+  it("preserves edits and secrets after a failed save without attempting a connection", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockRejectedValue(new Error("save failed"));
+    const w = useWorkspace();
+    Object.assign(w.profile.value, { fnId: "my-nas", username: "admin", remember: true });
+    w.password.value = "draft-password";
+    expect(await w.save()).toBeUndefined();
+    expect(w.password.value).toBe("draft-password");
+    expect(w.savedConnections.value).toHaveLength(0);
+    expect(w.hasSavedPassword.value).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(w.notice.value).toEqual({ message: "save failed", error: true });
+  });
+
+  it("validates the account before submitting configuration", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "  ";
+    expect(await w.save()).toBeUndefined();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(w.notice.value?.error).toBe(true);
+  });
+});
+
 describe("saved connections and incremental service mappings", () => {
   it("starts on the home page and keeps unsaved drafts out of saved lists", () => {
     const w = useWorkspace();

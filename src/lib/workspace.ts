@@ -24,6 +24,7 @@ import {
 export function useWorkspace() {
   const t = i18n.global.t;
   const desktop = isTauri();
+  let disposed = false;
   function createConnection(profile?: Profile, hasSavedPassword = false, saved = false) {
     const config: Profile = profile ?? {
       id: crypto.randomUUID(),
@@ -36,6 +37,7 @@ export function useWorkspace() {
     return {
       profile: config,
       saved,
+      connecting: false,
       password: "",
       otp: "",
       showPassword: false,
@@ -61,6 +63,7 @@ export function useWorkspace() {
     connections.find((c) => c.profile.id === selectedConnectionId.value)!,
   );
   const profile = computed(() => current.value.profile);
+  const connecting = computed(() => current.value.connecting);
   const password = computed({
     get: () => current.value.password,
     set: (value: string) => {
@@ -163,15 +166,30 @@ export function useWorkspace() {
     const id = selectedConnectionId.value;
     const removeLocal = () => {
       const index = connections.findIndex((c) => c.profile.id === id);
+      if (index < 0) return;
       connections[index]!.password = "";
       connections[index]!.otp = "";
       connections.splice(index, 1);
       if (!connections.length) connections.push(createConnection());
-      selectedConnectionId.value = (connections.find((c) => c.saved) ?? connections[0]!).profile.id;
+      if (selectedConnectionId.value === id)
+        selectedConnectionId.value = (
+          connections.find((c) => c.saved) ?? connections[0]!
+        ).profile.id;
       if (!silent) notify(t("notice.deleted"));
     };
     if (!desktop) {
       removeLocal();
+      return;
+    }
+    if (silent && !current.value.saved) {
+      // Closing a draft must remain immediate even if its test login is pending.
+      // Backend cleanup can wait for that login without holding the UI busy lock.
+      removeLocal();
+      try {
+        await invoke("remove_connection", { connectionId: id });
+      } catch (error) {
+        if (!disposed) notify(String(error instanceof Error ? error.message : error), true);
+      }
       return;
     }
     await run("delete-connection", async () => {
@@ -225,41 +243,64 @@ export function useWorkspace() {
       }
     }
   }
-  async function connect() {
-    return await run("connect", async () => {
-      profile.value.fnId = normalizeFnId(profile.value.fnId);
-      profile.value.username = profile.value.username.trim();
-      if (!profile.value.username) throw new Error(t("validation.username"));
-      if (!password.value && !hasSavedPassword.value) throw new Error(t("validation.password"));
-      inventory.value = null;
-      connection.value = await invoke<ConnectionInfo>("connect_nas", {
-        connectionId: selectedConnectionId.value,
-        input: {
-          fnId: profile.value.fnId,
-          username: profile.value.username.trim(),
-          password: password.value || null,
-          otp: otp.value || null,
-          remember: profile.value.remember,
-        },
-      });
-      password.value = "";
-      otp.value = "";
+  async function connect(connectionId = selectedConnectionId.value) {
+    if (!desktop) {
+      notify(t("notice.preview"), true);
+      return;
+    }
+    const target = connections.find((c) => c.profile.id === connectionId);
+    if (!target || target.connecting) return;
+    // Connecting belongs to this row, not the global busy lock. Capture the target
+    // before awaiting so navigation and concurrent connections cannot redirect results.
+    target.connecting = true;
+    try {
+      target.profile.fnId = normalizeFnId(target.profile.fnId);
+      target.profile.username = target.profile.username.trim();
+      if (!target.profile.username) throw new Error(t("validation.username"));
+      const hasPassword =
+        target.savedIdentity === `${target.profile.fnId}\n${target.profile.username}`;
+      if (!target.password && !hasPassword) throw new Error(t("validation.password"));
+      const input = {
+        fnId: target.profile.fnId,
+        username: target.profile.username,
+        password: target.password || null,
+        otp: target.otp || null,
+        remember: target.profile.remember,
+      };
+      target.inventory = null;
+      const result = await invoke<ConnectionInfo>("connect_nas", { connectionId, input });
+      if (disposed || !connections.includes(target)) return;
+      target.connection = result;
+      // Do not clear new input entered while the request was in flight.
+      if (target.password === (input.password ?? "")) target.password = "";
+      if (target.otp === (input.otp ?? "")) target.otp = "";
       notify(t("notice.connected"));
       await refresh();
       return true;
-    });
+    } catch (error) {
+      if (!disposed && connections.includes(target))
+        notify(String(error instanceof Error ? error.message : error), true);
+      return undefined;
+    } finally {
+      target.connecting = false;
+    }
   }
   async function save() {
     return await run("save", async () => {
-      if (!formMatchesSession.value) throw new Error(t("validation.testIdentity"));
-      await invoke("save_login", {
+      profile.value.fnId = normalizeFnId(profile.value.fnId);
+      profile.value.username = profile.value.username.trim();
+      if (!profile.value.username) throw new Error(t("validation.username"));
+      const passwordSaved = await invoke<boolean>("save_login", {
         connectionId: selectedConnectionId.value,
         profile: { ...profile.value, services: profile.value.services.map((s) => ({ ...s })) },
+        password: password.value || null,
       });
-      savedIdentity.value = profile.value.remember
+      savedIdentity.value = passwordSaved
         ? `${profile.value.fnId.trim().toLowerCase()}\n${profile.value.username.trim()}`
         : "";
       current.value.saved = true;
+      password.value = "";
+      otp.value = "";
       notify(t("notice.saved"));
       return true;
     });
@@ -402,18 +443,25 @@ export function useWorkspace() {
       );
     });
   }
-  async function toggleProxy() {
-    await run(proxy.value.running ? "stop-proxy" : "start-proxy", async () => {
-      if (proxy.value.running) {
-        await invoke("stop_proxy", { connectionId: selectedConnectionId.value });
+  async function toggleProxy(connectionId = selectedConnectionId.value) {
+    const target = connections.find((c) => c.profile.id === connectionId);
+    if (!target) return;
+    await run(target.proxy.running ? "stop-proxy" : "start-proxy", async () => {
+      if (target.proxy.running) {
+        await invoke("stop_proxy", { connectionId });
         await refresh();
         notify(t("notice.proxyStopped"));
         return;
       }
-      if (!formMatchesSession.value) throw new Error(t("validation.testAccount"));
-      proxy.value = await invoke<ProxyStatus>("start_proxy", {
-        connectionId: selectedConnectionId.value,
-        services: profile.value.services.map((s) => ({ ...s })),
+      if (
+        !target.connection.connected ||
+        target.profile.fnId.trim().toLowerCase() !== target.connection.fnId ||
+        target.profile.username.trim() !== target.connection.username
+      )
+        throw new Error(t("validation.testAccount"));
+      target.proxy = await invoke<ProxyStatus>("start_proxy", {
+        connectionId,
+        services: target.profile.services.map((s) => ({ ...s })),
       });
       await refresh();
       notify(t("notice.proxyStarted"));
@@ -469,6 +517,7 @@ export function useWorkspace() {
     }
   });
   onUnmounted(() => {
+    disposed = true;
     if (timer) clearInterval(timer);
     if (noticeTimer) clearTimeout(noticeTimer);
     unlisten?.();
@@ -502,6 +551,7 @@ export function useWorkspace() {
     editing,
     enabledServices,
     formMatchesSession,
+    connecting,
     connect,
     save,
     forget,
