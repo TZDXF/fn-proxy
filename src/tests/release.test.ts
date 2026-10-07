@@ -39,5 +39,7 @@ describe("release safety gates", () => {
     expect(workflow).toContain("refusing to overwrite it");
     expect(workflow.indexOf("gh release upload")).toBeLessThan(workflow.indexOf("--draft=false"));
     expect(workflow).toContain("Get-FileHash");
+    expect(workflow.indexOf("Copy-Item")).toBeLessThan(workflow.indexOf("Get-FileHash"));
+    expect(workflow).toContain("[^A-Za-z0-9._-]");
   });
 });

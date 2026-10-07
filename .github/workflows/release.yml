@@ -54,6 +54,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           $installers = @(Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*.exe")
           if ($installers.Count -eq 0) { throw "No NSIS installer was produced" }
+          # GitHub replaces spaces in asset names with dots. Normalize before hashing.
+          $assetDirectory = Join-Path $env:RUNNER_TEMP "fn-proxy-release"
+          New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
+          $installers = @($installers | ForEach-Object {
+            $assetPath = Join-Path $assetDirectory ($_.Name -replace '[^A-Za-z0-9._-]', '.')
+            Copy-Item -LiteralPath $_.FullName -Destination $assetPath -PassThru
+          })
           $checksums = @($installers | ForEach-Object {
             $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
