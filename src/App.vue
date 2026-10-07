@@ -59,9 +59,6 @@ const nav = computed(() => [
 const title = computed(
   () => nav.value.find((item) => item.id === section.value)?.name ?? t("nav.overview"),
 );
-const connectedCount = computed(
-  () => savedConnections.value.filter((c) => c.connection.connected).length,
-);
 const runningCount = computed(() => savedConnections.value.filter((c) => c.proxy.running).length);
 const serviceCount = computed(() =>
   savedConnections.value.reduce((total, c) => total + c.profile.services.length, 0),
@@ -117,23 +114,6 @@ async function saveConnection() {
     connectionBackup.value = null;
     connectionDialog.value = false;
   }
-}
-async function connectConnection(id: string) {
-  if (busy.value) return;
-  selectConnection(id);
-  notice.value = null;
-  if (!hasSavedPassword.value) {
-    editConnection(id);
-    return;
-  }
-  const originSection = section.value;
-  if (
-    !(await w.connect(id)) &&
-    selectedConnectionId.value === id &&
-    section.value === originSection &&
-    !connectionDialog.value
-  )
-    editConnection(id);
 }
 function selectConnection(id: string) {
   if (!busy.value) selectedConnectionId.value = id;
@@ -223,10 +203,8 @@ async function confirmDelete() {
         </TabsTrigger>
       </TabsList>
       <div class="sidebar-footer">
-        <span class="status-dot" :class="{ online: connectedCount > 0 }" /><span>{{
-          connectedCount
-            ? t("status.onlineConnections", { count: connectedCount })
-            : t("common.disconnected")
+        <span class="status-dot" :class="{ online: runningCount > 0 }" /><span>{{
+          runningCount ? t("status.runningProxies", { count: runningCount }) : t("status.proxyOff")
         }}</span
         ><span class="version">v0.1.0</span>
       </div>
@@ -260,7 +238,7 @@ async function confirmDelete() {
                 >{{ savedConnections.length
                 }}<small v-if="locale === 'zh-CN'">{{ t("overview.countUnit") }}</small></strong
               ><span class="stat-detail">{{
-                t("overview.online", { count: connectedCount })
+                t("status.runningProxies", { count: runningCount })
               }}</span>
             </div>
             <div class="stat-card">
@@ -306,9 +284,9 @@ async function confirmDelete() {
                 <strong>{{ c.profile.fnId }}</strong
                 ><span>{{ c.profile.username }}</span>
               </div>
-              <span class="badge" :class="{ success: c.connection.connected }"
-                ><span class="status-dot" :class="{ online: c.connection.connected }" />{{
-                  c.connection.connected ? t("common.connected") : t("common.disconnected")
+              <span class="badge" :class="{ success: c.proxy.running }"
+                ><span class="status-dot" :class="{ online: c.proxy.running }" />{{
+                  c.proxy.running ? t("status.proxyRunning") : t("status.proxyStopped")
                 }}</span
               ><UiButton variant="ghost" :disabled="!!busy" @click="showServices(c.profile.id)"
                 >{{ t("overview.serviceCount", { count: c.profile.services.length })
@@ -347,7 +325,6 @@ async function confirmDelete() {
                   <tr>
                     <th>FN ID</th>
                     <th>{{ t("connection.account") }}</th>
-                    <th>{{ t("connection.status") }}</th>
                     <th>{{ t("connection.services") }}</th>
                     <th>{{ t("connection.proxy") }}</th>
                     <th class="align-right">{{ t("actions.operations") }}</th>
@@ -359,13 +336,6 @@ async function confirmDelete() {
                       <strong>{{ c.profile.fnId }}</strong>
                     </td>
                     <td>{{ c.profile.username }}</td>
-                    <td>
-                      <span class="badge" :class="{ success: c.connection.connected }"
-                        ><span class="status-dot" :class="{ online: c.connection.connected }" />{{
-                          c.connection.connected ? t("common.connected") : t("common.disconnected")
-                        }}</span
-                      >
-                    </td>
                     <td>
                       <UiButton
                         variant="ghost"
@@ -382,24 +352,31 @@ async function confirmDelete() {
                     <td>
                       <div class="row-actions">
                         <UiButton
-                          v-if="!c.connection.connected || c.connecting"
                           variant="ghost"
-                          :disabled="!!busy || c.connecting"
-                          :aria-busy="c.connecting"
-                          :aria-label="t('actions.connectConnection', { name: c.profile.fnId })"
-                          @click="connectConnection(c.profile.id)"
-                          ><Icon name="link" />{{
-                            c.connecting ? t("connection.connecting") : t("connection.connect")
-                          }}</UiButton
-                        ><UiButton
-                          v-if="c.connection.connected"
-                          variant="ghost"
-                          :disabled="!!busy"
-                          @click="
-                            selectConnection(c.profile.id);
-                            w.disconnect();
+                          :disabled="
+                            !!busy ||
+                            c.connecting ||
+                            (!c.proxy.running && !c.profile.services.some((s) => s.enabled))
                           "
-                          ><Icon name="power" />{{ t("common.disconnect") }}</UiButton
+                          :aria-busy="c.connecting"
+                          :aria-label="
+                            t(
+                              c.proxy.running
+                                ? 'actions.stopConnectionProxy'
+                                : 'actions.startConnectionProxy',
+                              {
+                                name: c.profile.fnId,
+                              },
+                            )
+                          "
+                          @click="toggleConnectionProxy(c.profile.id)"
+                          ><Icon name="power" />{{
+                            c.proxy.running
+                              ? t("actions.stopProxy")
+                              : c.connecting
+                                ? t("actions.startingProxy")
+                                : t("actions.startProxy")
+                          }}</UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy"
@@ -675,8 +652,7 @@ async function confirmDelete() {
         />
       </div>
       <div class="dialog-footer">
-        <span v-if="connection.connected" class="badge success">{{ t("common.connected") }}</span
-        ><UiButton
+        <UiButton
           :disabled="!!busy || connecting || proxy.running"
           :aria-busy="connecting"
           @click="w.connect()"

@@ -59,7 +59,6 @@
     "serviceCount": "{count} 个服务"
   },
   "connection": {
-    "connect": "连接",
     "account": "账号",
     "status": "连接状态",
     "services": "服务",
@@ -80,9 +79,9 @@
     "notConnected": "尚未连接 NAS"
   },
   "actions": {
-    "connectConnection": "连接 {name}",
     "operations": "操作",
     "startProxy": "开启代理",
+    "startingProxy": "开启中…",
     "stopProxy": "停止代理",
     "startConnectionProxy": "开启 {name} 代理",
     "stopConnectionProxy": "停止 {name} 代理",

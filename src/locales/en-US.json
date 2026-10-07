@@ -59,7 +59,6 @@
     "serviceCount": "{count} services"
   },
   "connection": {
-    "connect": "Connect",
     "account": "Account",
     "status": "Connection status",
     "services": "Services",
@@ -80,9 +79,9 @@
     "notConnected": "Not connected to NAS yet"
   },
   "actions": {
-    "connectConnection": "Connect {name}",
     "operations": "Actions",
     "startProxy": "Start proxy",
+    "startingProxy": "Starting…",
     "stopProxy": "Stop proxy",
     "startConnectionProxy": "Start proxy for {name}",
     "stopConnectionProxy": "Stop proxy for {name}",
