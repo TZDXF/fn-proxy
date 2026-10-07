@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { isTauri } from "@tauri-apps/api/core";
+import Titlebar from "./components/Titlebar.vue";
 import { useI18n } from "vue-i18n";
 import SettingsPage from "./components/SettingsPage.vue";
 import { Label, TabsRoot, TabsList, TabsTrigger, TabsContent } from "reka-ui";
@@ -20,6 +22,7 @@ import {
 import { useWorkspace } from "./lib/workspace";
 
 const { t, locale } = useI18n({ useScope: "global" });
+const desktop = isTauri();
 const w = useWorkspace();
 const {
   profile,
@@ -41,6 +44,9 @@ const {
   editor,
   editing,
   logs,
+  allowLanAccess,
+  settingsReady,
+  anyProxyRunning,
 } = w;
 const nav = computed(() => [
   { id: "overview", name: t("nav.overview"), icon: "grid" },
@@ -188,7 +194,13 @@ async function confirmDelete() {
 </script>
 
 <template>
-  <TabsRoot v-model="section" orientation="vertical" class="app-shell">
+  <Titlebar v-if="desktop" />
+  <TabsRoot
+    v-model="section"
+    orientation="vertical"
+    class="app-shell"
+    :class="{ 'app-shell--desktop': desktop }"
+  >
     <aside class="sidebar">
       <div class="brand">
         <img class="brand-mark" src="/app-icon.svg" alt="" width="37" height="37" />
@@ -219,18 +231,6 @@ async function confirmDelete() {
       </div>
     </aside>
     <div class="main-shell">
-      <header class="topbar">
-        <div>
-          {{ t("nav.workspace") }} <span class="separator">/</span> <strong>{{ title }}</strong>
-        </div>
-        <span class="runtime-status"
-          ><span class="status-dot" :class="{ online: runningCount > 0 }" />{{
-            runningCount
-              ? t("status.runningProxies", { count: runningCount })
-              : t("status.proxyOff")
-          }}</span
-        >
-      </header>
       <main>
         <div class="page-heading">
           <h1>{{ title }}</h1>
@@ -398,7 +398,7 @@ async function confirmDelete() {
                             selectConnection(c.profile.id);
                             w.disconnect();
                           "
-                          >{{ t("common.disconnect") }}</UiButton
+                          ><Icon name="power" />{{ t("common.disconnect") }}</UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy"
@@ -593,7 +593,14 @@ async function confirmDelete() {
             </div>
           </section></TabsContent
         >
-        <TabsContent value="settings" class="page-content"><SettingsPage /></TabsContent>
+        <TabsContent value="settings" class="page-content">
+          <SettingsPage
+            :allow-lan-access="allowLanAccess"
+            :network-disabled="!desktop || !settingsReady || Boolean(busy) || anyProxyRunning"
+            :any-proxy-running="anyProxyRunning"
+            @update:allow-lan-access="w.setAllowLanAccess"
+          />
+        </TabsContent>
       </main>
     </div>
   </TabsRoot>

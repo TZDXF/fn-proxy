@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex as StdMutex, RwLock as StdRwLock,
     },
     time::Duration,
@@ -87,6 +87,7 @@ impl ConnectionState {
     }
 }
 pub struct AppState {
+    allow_lan_access: AtomicBool,
     pub profile_path: PathBuf,
     connections: StdMutex<BTreeMap<String, Arc<ConnectionState>>>,
     operation: Mutex<()>,
@@ -113,6 +114,7 @@ impl AppState {
             );
         }
         Self {
+            allow_lan_access: AtomicBool::new(workspace.allow_lan_access),
             profile_path,
             connections: StdMutex::new(connections),
             operation: Mutex::new(()),
@@ -163,6 +165,18 @@ impl AppState {
         })
     }
     fn persist(&self, replacement: Option<&Profile>, removed: Option<&str>) -> Result<()> {
+        self.persist_with_access(
+            replacement,
+            removed,
+            self.allow_lan_access.load(Ordering::Relaxed),
+        )
+    }
+    fn persist_with_access(
+        &self,
+        replacement: Option<&Profile>,
+        removed: Option<&str>,
+        allow_lan_access: bool,
+    ) -> Result<()> {
         let mut profiles: Vec<Profile> = self
             .all()
             .into_iter()
@@ -176,7 +190,13 @@ impl AppState {
         if let Some(profile) = replacement {
             profiles.push(profile.clone());
         }
-        storage::save_profiles(&self.profile_path, &WorkspaceProfiles { profiles })
+        storage::save_profiles(
+            &self.profile_path,
+            &WorkspaceProfiles {
+                profiles,
+                allow_lan_access,
+            },
+        )
     }
 }
 async fn stop_internal(state: &ConnectionState) {
@@ -436,6 +456,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
 #[tauri::command]
 pub fn get_bootstrap(state: State<'_, Arc<AppState>>) -> Bootstrap {
     Bootstrap {
+        allow_lan_access: state.allow_lan_access.load(Ordering::Relaxed),
         profiles: state
             .all()
             .into_iter()
@@ -450,6 +471,25 @@ pub fn get_bootstrap(state: State<'_, Arc<AppState>>) -> Bootstrap {
             })
             .collect(),
     }
+}
+async fn set_lan_access(manager: &AppState, enabled: bool) -> Result<()> {
+    let _workspace_guard = manager.operation.lock().await;
+    if manager.allow_lan_access.load(Ordering::Relaxed) == enabled {
+        return Ok(());
+    }
+    for connection in manager.all() {
+        if !connection.proxies.lock().await.is_empty() {
+            return Err(error("请先停止所有连接的代理，再修改局域网访问设置"));
+        }
+    }
+    // Save first: a failed write must not change the effective listening policy.
+    manager.persist_with_access(None, None, enabled)?;
+    manager.allow_lan_access.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+#[tauri::command]
+pub async fn set_allow_lan_access(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<()> {
+    set_lan_access(state.inner(), enabled).await
 }
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot> {
@@ -778,6 +818,7 @@ pub async fn start_proxy(
         &session.info.fn_id,
         state.session.clone(),
         state.counter.clone(),
+        manager.allow_lan_access.load(Ordering::Relaxed),
     )
     .await?;
     let mut profile = state.profile();
@@ -794,7 +835,11 @@ pub async fn start_proxy(
     state.log(
         &app,
         "success",
-        "本地代理已启动，仅监听 127.0.0.1；请求将自动附加服务凭据",
+        if manager.allow_lan_access.load(Ordering::Relaxed) {
+            "代理已启动，监听 0.0.0.0，允许局域网访问；请求将自动附加服务凭据"
+        } else {
+            "本地代理已启动，仅监听 127.0.0.1；请求将自动附加服务凭据"
+        },
     );
     Ok(ProxyStatus {
         running: true,
@@ -874,6 +919,7 @@ pub async fn update_services(
             &fn_id,
             state.session.clone(),
             state.counter.clone(),
+            manager.allow_lan_access.load(Ordering::Relaxed),
         )
         .await?
     };
@@ -1000,6 +1046,7 @@ mod tests {
                 rand::random::<u64>()
             )),
             WorkspaceProfiles {
+                allow_lan_access: false,
                 profiles: vec![
                     Profile {
                         id: "first".to_owned(),
@@ -1101,10 +1148,15 @@ mod tests {
                 upstream: format!("https://api.{fn_id}.fnos.net/"),
                 enabled: true,
             }];
-            *state.proxies.lock().await =
-                proxy::start(&routes, fn_id, state.session.clone(), state.counter.clone())
-                    .await
-                    .unwrap();
+            *state.proxies.lock().await = proxy::start(
+                &routes,
+                fn_id,
+                state.session.clone(),
+                state.counter.clone(),
+                false,
+            )
+            .await
+            .unwrap();
         }
         stop_internal(&first).await;
         assert!(first.proxies.lock().await.is_empty());
@@ -1171,5 +1223,73 @@ mod tests {
             &manager.ensure_connection("draft").unwrap()
         ));
         assert!(!Arc::ptr_eq(&draft, &manager.connection("first").unwrap()));
+    }
+    #[tokio::test]
+    async fn lan_setting_is_restored_and_profile_saves_preserve_it() {
+        let manager = manager();
+        assert!(!manager.allow_lan_access.load(Ordering::Relaxed));
+        set_lan_access(&manager, true).await.unwrap();
+        assert!(manager.allow_lan_access.load(Ordering::Relaxed));
+        let stored = storage::load_profiles(&manager.profile_path).unwrap();
+        assert!(stored.allow_lan_access);
+        assert_eq!(stored.profiles.len(), 2);
+        let restored = AppState::new(manager.profile_path.clone(), stored);
+        assert!(restored.allow_lan_access.load(Ordering::Relaxed));
+        restored.persist(None, Some("first")).unwrap();
+        assert!(
+            storage::load_profiles(&manager.profile_path)
+                .unwrap()
+                .allow_lan_access
+        );
+        set_lan_access(&restored, false).await.unwrap();
+        assert!(!restored.allow_lan_access.load(Ordering::Relaxed));
+        assert!(
+            !storage::load_profiles(&manager.profile_path)
+                .unwrap()
+                .allow_lan_access
+        );
+        std::fs::remove_file(&manager.profile_path).unwrap();
+    }
+    #[tokio::test]
+    async fn lan_setting_cannot_change_while_any_connection_has_listeners() {
+        let manager = manager();
+        let second = manager.connection("second").unwrap();
+        let free = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let route = ServiceRoute {
+            id: "api".to_owned(),
+            name: "API".to_owned(),
+            nas_port: 8084,
+            local_port: port,
+            upstream: "https://api.nas-b.fnos.net/".to_owned(),
+            enabled: true,
+        };
+        *second.proxies.lock().await = proxy::start(
+            &[route],
+            "nas-b",
+            second.session.clone(),
+            second.counter.clone(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(set_lan_access(&manager, true).await.is_err());
+        assert!(!manager.allow_lan_access.load(Ordering::Relaxed));
+        assert!(!manager.profile_path.exists());
+        assert_eq!(second.proxies.lock().await.len(), 1);
+        stop_internal(&second).await;
+        set_lan_access(&manager, true).await.unwrap();
+        std::fs::remove_file(&manager.profile_path).unwrap();
+    }
+    #[tokio::test]
+    async fn failed_lan_setting_save_does_not_change_listening_policy() {
+        let mut manager = manager();
+        let blocker = manager.profile_path.clone();
+        std::fs::write(&blocker, "not a directory").unwrap();
+        manager.profile_path = blocker.join("profile.json");
+        assert!(set_lan_access(&manager, true).await.is_err());
+        assert!(!manager.allow_lan_access.load(Ordering::Relaxed));
+        std::fs::remove_file(blocker).unwrap();
     }
 }

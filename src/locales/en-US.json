@@ -1,4 +1,12 @@
 {
+  "window": {
+    "controls": "Window controls",
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close window",
+    "actionFailed": "Window action failed. Please try again."
+  },
   "nav": {
     "overview": "Overview",
     "connections": "Connections",
@@ -65,7 +73,6 @@
     "showPassword": "Show password",
     "otp": "Two-step verification code",
     "remember": "Remember password",
-    "autoConnect": "Connect on startup",
     "connecting": "Connecting…",
     "test": "Test connection",
     "save": "Save connection",
@@ -101,6 +108,7 @@
     "addMethod": "Service creation method",
     "manual": "Manual",
     "discovery": "Discovery",
+    "portBindingHint": "Services are matched by their fixed NAS port. Remote domains refresh automatically; local ports stay unchanged. For Docker, use the published host port.",
     "nasPort": "NAS port",
     "localPort": "Local port",
     "enable": "Enable service",
@@ -109,8 +117,7 @@
     "notRead": "No services loaded yet",
     "noNas": "NAS not connected",
     "noAvailable": "No services available to add",
-    "dockerPorts": "Docker ports",
-    "portBindingHint": "Services are matched by their fixed NAS port. Remote domains refresh automatically; local ports stay unchanged. For Docker, use the published host port."
+    "dockerPorts": "Docker ports"
   },
   "logs": {
     "empty": "No logs yet",
@@ -123,7 +130,7 @@
     "confirmDelete": "Confirm deletion"
   },
   "settings": {
-    "description": "Customize language and appearance. Changes take effect immediately and are saved automatically.",
+    "description": "Manage the interface language, appearance, and proxy access scope. Settings are saved automatically on this device.",
     "language": "Language",
     "languageDescription": "Choose the language used throughout the app.",
     "displayLanguage": "Display language",
@@ -137,8 +144,16 @@
     "darkDescription": "A softer, low-light interface",
     "systemDescription": "Match the system appearance",
     "currentTheme": "Currently using the {theme} theme",
-    "saved": "Preferences are saved on this device and do not affect connections or service mappings.",
-    "title": "FN Proxy · Access NAS services locally"
+    "saved": "Settings are saved automatically on this device. LAN access applies to all connections.",
+    "title": "FN Proxy · Access NAS services locally",
+    "network": "Network access",
+    "networkDescription": "Control LAN access to proxies for all connections. Stop all proxies before changing this setting; it takes effect when proxies are started again.",
+    "allowLanAccess": "Allow LAN access",
+    "lanEnabled": "Enabled: proxies listen on 0.0.0.0 and accept access via this computer’s LAN IPv4 address.",
+    "lanDisabled": "Disabled: proxies listen on 127.0.0.1 and accept access only from this computer.",
+    "lanAddress": "Other devices can use http://LAN-IP:mapped-port/ after enabling this option. If the connection fails, check that the system firewall allows the port.",
+    "lanWarning": "Enable only on trusted networks. The LAN endpoint has no additional password and shares service credentials from the current NAS session. Do not forward these ports to the public internet.",
+    "stopProxiesFirst": "Stop the proxies for all connections before changing LAN access."
   },
   "notice": {
     "preview": "This is a UI preview. Run npm run desktop:dev to sign in and enable the proxy in the desktop app.",
@@ -155,7 +170,8 @@
     "credentialsUpdated": "Service access credentials updated. No need to copy cookies.",
     "copied": "Copied to clipboard",
     "copyFailed": "Copy is unavailable. Please select and copy the URL manually.",
-    "bootstrapFailed": "Could not load the desktop backend state. Check the startup logs."
+    "bootstrapFailed": "Could not load the desktop backend state. Check the startup logs.",
+    "lanAccessSaved": "LAN access setting saved"
   },
   "validation": {
     "username": "Enter your NAS username",

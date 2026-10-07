@@ -60,6 +60,9 @@ async fn ws_echo(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
         })
 }
 async fn fixture() -> Fixture {
+    fixture_with_access(false).await
+}
+async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
     let (base, authentication) = mock_server(true).await;
     let session = NasSession::login(
         base,
@@ -83,7 +86,9 @@ async fn fixture() -> Fixture {
     let service_task = tokio::spawn(async move {
         axum::serve(service, service_app).await.unwrap();
     });
-    let local_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local_listener = TcpListener::bind((listen_address(allow_lan_access), 0))
+        .await
+        .unwrap();
     let port = local_listener.local_addr().unwrap().port();
     let hub = Arc::new(RwLock::new(Some(session)));
     let cancel = CancellationToken::new();
@@ -92,6 +97,7 @@ async fn fixture() -> Fixture {
         session: hub.clone(),
         upstream: upstream.clone(),
         local_port: port,
+        allow_lan_access,
         requests: Arc::new(AtomicU64::new(0)),
         cancel: cancel.clone(),
         http: reqwest::Client::builder()
@@ -260,6 +266,7 @@ async fn port_conflict_never_leaves_partially_started_listeners() {
         "my-nas",
         Arc::new(RwLock::new(None)),
         Arc::new(AtomicU64::new(0)),
+        false,
     )
     .await;
     assert!(result.is_err());
@@ -275,9 +282,15 @@ async fn stop_releases_listener_and_http_upstreams_stay_forbidden() {
     drop(free);
     let hub = Arc::new(RwLock::new(None));
     let counter = Arc::new(AtomicU64::new(0));
-    let handles = start(&[route(port)], "my-nas", hub.clone(), counter.clone())
-        .await
-        .unwrap();
+    let handles = start(
+        &[route(port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         reqwest::get(format!("http://127.0.0.1:{port}/"))
             .await
@@ -292,7 +305,9 @@ async fn stop_releases_listener_and_http_upstreams_stay_forbidden() {
     drop(rebound);
     let mut insecure = route(port);
     insecure.upstream = "http://127.0.0.1:8084/".into();
-    assert!(start(&[insecure], "my-nas", hub, counter).await.is_err());
+    assert!(start(&[insecure], "my-nas", hub, counter, false)
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -304,16 +319,22 @@ async fn incrementally_added_listener_preserves_existing_socket_and_counter() {
     drop((first, second));
     let hub = Arc::new(RwLock::new(None));
     let counter = Arc::new(AtomicU64::new(42));
-    let existing = start(&[route(first_port)], "my-nas", hub.clone(), counter.clone())
-        .await
-        .unwrap();
+    let existing = start(
+        &[route(first_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+    )
+    .await
+    .unwrap();
     let old_cancel = existing[0].cancel.clone();
     let listeners = existing.iter().map(|h| h.info.clone()).collect::<Vec<_>>();
     let additions =
         additional_routes(&[route(first_port), route(second_port)], &listeners).unwrap();
     assert_eq!(additions.len(), 1);
     assert_eq!(additions[0].local_port, second_port);
-    let added = start(&additions, "my-nas", hub, counter.clone())
+    let added = start(&additions, "my-nas", hub, counter.clone(), false)
         .await
         .unwrap();
     assert!(!old_cancel.is_cancelled());
@@ -350,14 +371,21 @@ async fn incremental_port_conflict_keeps_old_listener_alive_and_releases_new_por
     drop((first, free));
     let hub = Arc::new(RwLock::new(None));
     let counter = Arc::new(AtomicU64::new(9));
-    let old = start(&[route(first_port)], "my-nas", hub.clone(), counter.clone())
-        .await
-        .unwrap();
+    let old = start(
+        &[route(first_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+    )
+    .await
+    .unwrap();
     let result = start(
         &[route(free_port), route(busy_port)],
         "my-nas",
         hub,
         counter.clone(),
+        false,
     )
     .await;
     assert!(result.is_err());
@@ -447,6 +475,7 @@ async fn adding_a_listener_does_not_interrupt_an_existing_websocket() {
         "my-nas",
         f.hub.clone(),
         Arc::new(AtomicU64::new(0)),
+        false,
     )
     .await
     .unwrap();
@@ -461,6 +490,107 @@ async fn adding_a_listener_does_not_interrupt_an_existing_websocket() {
     assert!(!f.cancel.is_cancelled());
     socket.close(None).await.unwrap();
     stop(added).await;
+}
+
+#[tokio::test]
+async fn lan_http_requests_keep_credentials_and_redirects_on_the_requested_host() {
+    let local_only = fixture().await;
+    let lan = fixture_with_access(true).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let blocked = client
+        .get(local_only.local.join("echo").unwrap())
+        .header(
+            header::HOST,
+            format!("192.168.1.10:{}", local_only.local.port().unwrap()),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), 403);
+    let host = format!("192.168.1.10:{}", lan.local.port().unwrap());
+    let origin = format!("http://{host}");
+    let response = client
+        .post(lan.local.join("echo?lan=1").unwrap())
+        .header(header::HOST, &host)
+        .header(header::ORIGIN, &origin)
+        .header(header::REFERER, format!("{origin}/page"))
+        .header(header::COOKIE, "application=ok; entry-token=attacker")
+        .body("LAN request")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let result: Value = response.json().await.unwrap();
+    assert_eq!(result["body"], "LAN request");
+    assert_eq!(
+        result["cookie"],
+        "application=ok; entry-token=fixture-entry-token"
+    );
+    assert!(result["referer"].as_str().unwrap().ends_with("/page"));
+    assert!(!result["referer"].as_str().unwrap().contains("192.168.1.10"));
+    let redirect = client
+        .get(lan.local.join("redirect").unwrap())
+        .header(header::HOST, &host)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redirect.status(), 302);
+    assert_eq!(
+        redirect.headers()[header::LOCATION],
+        format!("{origin}/echo?next=ok")
+    );
+    for (header_name, value) in [
+        ("host", format!("evil.test:{}", lan.local.port().unwrap())),
+        ("origin", "https://evil.test".to_owned()),
+        ("sec-fetch-site", "cross-site".to_owned()),
+    ] {
+        assert_eq!(
+            client
+                .get(lan.local.join("echo").unwrap())
+                .header(header::HOST, &host)
+                .header(header_name, value)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+    }
+}
+#[tokio::test]
+async fn lan_websocket_accepts_matching_origin_and_forwards_service_credentials() {
+    let lan = fixture_with_access(true).await;
+    let mut url = lan.local.join("ws").unwrap();
+    url.set_scheme("ws").unwrap();
+    let mut request = url.as_str().into_client_request().unwrap();
+    let host = format!("192.168.1.10:{}", lan.local.port().unwrap());
+    request
+        .headers_mut()
+        .insert(header::HOST, host.parse().unwrap());
+    request
+        .headers_mut()
+        .insert(header::ORIGIN, format!("http://{host}").parse().unwrap());
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "fixture-protocol".parse().unwrap(),
+    );
+    let (mut socket, response) = connect_async(request).await.unwrap();
+    assert_eq!(
+        response.headers()["sec-websocket-protocol"],
+        "fixture-protocol"
+    );
+    socket
+        .send(RemoteMessage::Text("LAN websocket".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap(),
+        RemoteMessage::Text("LAN websocket".into())
+    );
+    socket.close(None).await.unwrap();
 }
 
 #[tokio::test]

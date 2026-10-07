@@ -1,5 +1,7 @@
 mod auth;
 mod commands;
+#[cfg(desktop)]
+mod desktop;
 mod docker;
 mod error;
 mod inventory;
@@ -19,11 +21,18 @@ pub fn run() {
             let profile = storage::load_profiles(&path).unwrap_or_default();
             let state = Arc::new(commands::AppState::new(path, profile));
             app.manage(state.clone());
+            #[cfg(desktop)]
+            desktop::setup(app)?;
             commands::auto_connect(app.handle().clone(), state);
             Ok(())
         })
+        .on_window_event(|window, event| {
+            #[cfg(desktop)]
+            desktop::on_window_event(window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_bootstrap,
+            commands::set_allow_lan_access,
             commands::get_snapshot,
             commands::get_logs,
             commands::connect_nas,

@@ -15,6 +15,7 @@
         "title": "FN Proxy · NAS 服务直达本机",
         "width": 1280,
         "height": 880,
+        "decorations": false,
         "minWidth": 1000,
         "minHeight": 720,
         "backgroundColor": "#f6f8fa"

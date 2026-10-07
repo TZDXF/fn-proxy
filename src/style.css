@@ -3,11 +3,12 @@
   --font-sans: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
 }
 :root {
+  --titlebar-height: 0px;
+  --desktop-titlebar-height: 40px;
   color-scheme: light;
   --on-accent: #fff;
   --background: #f5f7f7;
   --surface: #fff;
-  --surface-translucent: #ffffffc7;
   --surface-subtle: #f5f8f6;
   --surface-hover: #f2f7f4;
   --accent-soft: #eaf5ef;
@@ -51,7 +52,6 @@
   --on-accent: #10261a;
   --background: #101813;
   --surface: #19251f;
-  --surface-translucent: #19251fe8;
   --surface-subtle: #1e2d25;
   --surface-hover: #283b30;
   --accent-soft: #213e30;
@@ -131,13 +131,83 @@ code {
     Consolas,
     monospace;
 }
+.app-shell--desktop {
+  --titlebar-height: var(--desktop-titlebar-height);
+}
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 40;
+  display: flex;
+  height: var(--desktop-titlebar-height);
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+.titlebar-drag-region {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  padding: 0 14px;
+}
+.titlebar-drag-region img {
+  flex-shrink: 0;
+  pointer-events: none;
+}
+.titlebar-title,
+.titlebar-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.titlebar--inactive .titlebar-drag-region {
+  opacity: 0.6;
+}
+.titlebar-error {
+  color: var(--error-text);
+}
+.titlebar-controls {
+  display: flex;
+  flex-shrink: 0;
+}
+.titlebar-button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+}
+.titlebar-button:hover {
+  background: var(--surface-hover);
+}
+.titlebar-button:active {
+  background: var(--accent-tint);
+}
+.titlebar-button:focus-visible {
+  outline-offset: -4px;
+}
+.titlebar-button--close:hover,
+.titlebar-button--close:active {
+  background: var(--danger);
+  color: #fff;
+}
 .app-shell {
   display: flex;
   min-height: 100vh;
+  padding-top: var(--titlebar-height);
 }
 .sidebar {
   position: fixed;
-  inset: 0 auto 0 0;
+  inset: var(--titlebar-height) auto 0 0;
   width: 218px;
   border-right: 1px solid var(--line);
   background: var(--surface);
@@ -229,31 +299,6 @@ code {
   margin-left: 218px;
   width: calc(100% - 218px);
   min-width: 0;
-}
-.topbar {
-  height: 72px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 38px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-translucent);
-  color: var(--muted);
-  font-size: 12px;
-}
-.topbar strong {
-  font-weight: 550;
-  color: var(--text-secondary);
-}
-.separator {
-  margin: 0 12px;
-  color: var(--text-faint);
-}
-.runtime-status {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 11px;
 }
 main {
   max-width: 1520px;
@@ -879,9 +924,6 @@ td strong {
   main {
     padding: 28px 24px;
   }
-  .topbar {
-    padding: 0 24px;
-  }
   .overview-row {
     gap: 12px;
   }
@@ -923,13 +965,6 @@ td strong {
   }
   main {
     padding: 25px 18px;
-  }
-  .topbar {
-    padding: 0 18px;
-    height: 62px;
-  }
-  .runtime-status {
-    font-size: 10px;
   }
   .stats-grid {
     gap: 10px;
@@ -989,9 +1024,6 @@ td strong {
   }
   .stat-card .stat-detail {
     margin: 0;
-  }
-  .runtime-status {
-    display: none;
   }
   h1 {
     font-size: 24px;
@@ -1076,6 +1108,27 @@ td strong {
   gap: 18px;
   font-size: 13px;
   color: var(--text-secondary);
+}
+.settings-network-row {
+  align-items: flex-start;
+  padding-bottom: 12px;
+}
+.settings-network-row p,
+.settings-network-hints p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.settings-network-row .switch {
+  flex-shrink: 0;
+}
+.settings-network-hints {
+  padding: 0 24px 24px;
+  overflow-wrap: anywhere;
+}
+.settings-network-hints .settings-network-warning {
+  color: var(--accent);
 }
 .settings-language-row .select-trigger {
   min-width: 210px;

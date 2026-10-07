@@ -21,6 +21,8 @@ fn default_connection_id() -> String {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfiles {
+    #[serde(default)]
+    pub allow_lan_access: bool,
     pub profiles: Vec<Profile>,
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -113,6 +115,7 @@ pub struct ServiceInventory {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
+    pub allow_lan_access: bool,
     pub profiles: Vec<SavedProfile>,
 }
 #[derive(Clone, Serialize)]

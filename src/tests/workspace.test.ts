@@ -594,6 +594,72 @@ describe("saved connections and incremental service mappings", () => {
   });
 });
 
+describe("LAN access settings", () => {
+  it("defaults to disabled and blocks changes before backend state is ready", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    expect(w.allowLanAccess.value).toBe(false);
+    expect(w.settingsReady.value).toBe(false);
+    await w.setAllowLanAccess(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+  it("restores the backend setting even when no connections have been saved", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_bootstrap") return { allowLanAccess: true, profiles: [] };
+      if (command === "get_snapshot") return { connections: [] };
+      if (command === "get_logs") return [];
+    });
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    expect(w.allowLanAccess.value).toBe(true);
+    expect(w.settingsReady.value).toBe(true);
+  });
+  it("saves only through backend IPC and updates the switch after success", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    let complete!: () => void;
+    mocks.invoke.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const saved = w.setAllowLanAccess(true);
+    expect(w.busy.value).toBe("lan-access");
+    expect(w.allowLanAccess.value).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("set_allow_lan_access", { enabled: true });
+    complete();
+    await saved;
+    expect(w.allowLanAccess.value).toBe(true);
+    expect(w.busy.value).toBe("");
+  });
+  it("keeps the previous setting and reports a failed save", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockRejectedValue(new Error("save failed"));
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    await w.setAllowLanAccess(true);
+    expect(w.allowLanAccess.value).toBe(false);
+    expect(w.notice.value).toEqual({ message: "save failed", error: true });
+    expect(w.busy.value).toBe("");
+  });
+  it("blocks changes when a proxy on another connection is still running", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    w.proxy.value = { running: true, listeners: [], requests: 0 };
+    w.addConnection();
+    expect(w.proxy.value.running).toBe(false);
+    expect(w.anyProxyRunning.value).toBe(true);
+    await w.setAllowLanAccess(true);
+    expect(w.allowLanAccess.value).toBe(false);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(w.notice.value?.message).toContain("停止所有连接");
+  });
+});
+
 describe("fixed NAS port domain cache", () => {
   it("refreshes domains from snapshots without overwriting local settings or another NAS", async () => {
     vi.useFakeTimers();

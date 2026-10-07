@@ -3,7 +3,14 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "./Icon.vue";
 import UiSelect from "./ui/UiSelect.vue";
+import UiSwitch from "./ui/UiSwitch.vue";
 
+defineProps<{
+  allowLanAccess: boolean;
+  networkDisabled: boolean;
+  anyProxyRunning: boolean;
+}>();
+const emit = defineEmits<{ "update:allowLanAccess": [value: boolean] }>();
 import { preferences, type AppLocale, type ThemeMode } from "../lib/preferences";
 
 const { t } = useI18n({ useScope: "global" });
@@ -43,6 +50,35 @@ function selectTheme(event: Event) {
 <template>
   <div class="settings-page">
     <p class="settings-description">{{ t("settings.description") }}</p>
+    <section class="panel settings-panel" aria-labelledby="network-heading">
+      <div class="panel-heading settings-panel-heading">
+        <span class="settings-icon"><Icon name="server" :size="21" /></span>
+        <div>
+          <h2 id="network-heading">{{ t("settings.network") }}</h2>
+          <p>{{ t("settings.networkDescription") }}</p>
+        </div>
+      </div>
+      <div class="settings-language-row settings-network-row">
+        <div>
+          <label for="allow-lan-access">{{ t("settings.allowLanAccess") }}</label>
+          <p>{{ t(allowLanAccess ? "settings.lanEnabled" : "settings.lanDisabled") }}</p>
+        </div>
+        <UiSwitch
+          id="allow-lan-access"
+          :model-value="allowLanAccess"
+          :disabled="networkDisabled"
+          :label="t('settings.allowLanAccess')"
+          @update:model-value="emit('update:allowLanAccess', $event)"
+        />
+      </div>
+      <div class="settings-network-hints">
+        <p>{{ t("settings.lanAddress") }}</p>
+        <p>{{ t("settings.lanWarning") }}</p>
+        <p v-if="anyProxyRunning" class="settings-network-warning" role="status">
+          {{ t("settings.stopProxiesFirst") }}
+        </p>
+      </div>
+    </section>
     <section class="panel settings-panel" aria-labelledby="language-heading">
       <div class="panel-heading settings-panel-heading">
         <span class="settings-icon"><Icon name="globe" :size="21" /></span>

@@ -1,4 +1,12 @@
 {
+  "window": {
+    "controls": "窗口控制",
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭窗口",
+    "actionFailed": "窗口操作失败，请重试"
+  },
   "nav": {
     "overview": "首页",
     "connections": "连接",
@@ -65,7 +73,6 @@
     "showPassword": "显示密码",
     "otp": "两步验证码",
     "remember": "保存密码",
-    "autoConnect": "启动时自动连接",
     "connecting": "连接中…",
     "test": "测试连接",
     "save": "保存连接",
@@ -101,6 +108,7 @@
     "addMethod": "添加服务方式",
     "manual": "手动添加",
     "discovery": "服务发现",
+    "portBindingHint": "固定使用 NAS 端口匹配服务；远程域名变化时自动更新，本地端口不变。Docker 请填写宿主机发布端口。",
     "nasPort": "NAS 端口",
     "localPort": "本地端口",
     "enable": "启用服务",
@@ -109,8 +117,7 @@
     "notRead": "尚未读取服务",
     "noNas": "未连接 NAS",
     "noAvailable": "暂无可添加服务",
-    "dockerPorts": "Docker 端口",
-    "portBindingHint": "固定使用 NAS 端口匹配服务；远程域名变化时自动更新，本地端口不变。Docker 请填写宿主机发布端口。"
+    "dockerPorts": "Docker 端口"
   },
   "logs": {
     "empty": "暂无日志",
@@ -123,7 +130,7 @@
     "confirmDelete": "确认删除"
   },
   "settings": {
-    "description": "管理界面语言和外观。更改会即时生效并自动保存。",
+    "description": "管理界面语言、外观和代理访问范围。设置会自动保存在此设备。",
     "language": "语言",
     "languageDescription": "选择应用的显示语言。",
     "displayLanguage": "显示语言",
@@ -137,8 +144,16 @@
     "darkDescription": "柔和低光的深色界面",
     "systemDescription": "自动跟随系统外观",
     "currentTheme": "当前使用{theme}主题",
-    "saved": "偏好设置已自动保存在此设备，不会影响连接和服务映射。",
-    "title": "FN Proxy · NAS 服务直达本机"
+    "saved": "设置已自动保存在此设备。局域网访问设置适用于所有连接。",
+    "title": "FN Proxy · NAS 服务直达本机",
+    "network": "网络访问",
+    "networkDescription": "控制所有连接的代理是否允许局域网设备访问。修改前需停止所有代理，重新开启代理后生效。",
+    "allowLanAccess": "允许局域网访问",
+    "lanEnabled": "已开启：代理监听 0.0.0.0，可通过本机局域网 IPv4 地址访问。",
+    "lanDisabled": "已关闭：代理仅监听 127.0.0.1，只允许本机访问。",
+    "lanAddress": "开启后，其他设备使用 http://本机局域网IP:映射端口/ 访问；如无法连接，请检查系统防火墙是否允许该端口。",
+    "lanWarning": "仅在可信网络开启。局域网入口没有额外密码，访问者会共用当前 NAS 会话的服务凭据；请勿将端口映射到公网。",
+    "stopProxiesFirst": "请先停止所有连接的代理，再修改局域网访问设置。"
   },
   "notice": {
     "preview": "当前是界面预览。请运行 npm run desktop:dev，在桌面应用中登录和启用代理。",
@@ -155,7 +170,8 @@
     "credentialsUpdated": "服务访问凭据已更新，不需要复制 Cookie。",
     "copied": "已复制到剪贴板",
     "copyFailed": "复制不可用，请手动选择并复制地址",
-    "bootstrapFailed": "读取桌面后端状态失败，请查看应用启动日志"
+    "bootstrapFailed": "读取桌面后端状态失败，请查看应用启动日志",
+    "lanAccessSaved": "局域网访问设置已保存"
   },
   "validation": {
     "username": "请输入 NAS 用户名",

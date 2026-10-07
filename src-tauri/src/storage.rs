@@ -18,6 +18,7 @@ pub fn load_profiles(path: &Path) -> Result<WorkspaceProfiles> {
     match serde_json::from_slice(&std::fs::read(path)?)? {
         StoredProfiles::Workspace(workspace) => Ok(workspace),
         StoredProfiles::Legacy(profile) => Ok(WorkspaceProfiles {
+            allow_lan_access: false,
             profiles: vec![profile],
         }),
     }
@@ -130,6 +131,7 @@ mod tests {
         let file = ConfigFile::new();
         assert!(load_profiles(&file.0).unwrap().profiles.is_empty());
         let mut workspace = WorkspaceProfiles {
+            allow_lan_access: false,
             profiles: vec![
                 Profile {
                     id: "first".to_owned(),
@@ -150,5 +152,18 @@ mod tests {
         let loaded = load_profiles(&file.0).unwrap();
         assert_eq!(loaded.profiles.len(), 1);
         assert_eq!(loaded.profiles[0].id, "second");
+    }
+    #[test]
+    fn old_workspace_defaults_to_loopback_and_lan_setting_round_trips() {
+        let file = ConfigFile::new();
+        std::fs::write(&file.0, br#"{"profiles":[]}"#).unwrap();
+        let mut workspace = load_profiles(&file.0).unwrap();
+        assert!(!workspace.allow_lan_access);
+        workspace.allow_lan_access = true;
+        save_profiles(&file.0, &workspace).unwrap();
+        assert!(load_profiles(&file.0).unwrap().allow_lan_access);
+        workspace.allow_lan_access = false;
+        save_profiles(&file.0, &workspace).unwrap();
+        assert!(!load_profiles(&file.0).unwrap().allow_lan_access);
     }
 }

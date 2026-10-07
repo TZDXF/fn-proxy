@@ -33,6 +33,7 @@ pub struct ProxyContext {
     pub session: SessionHub,
     pub upstream: UpstreamHub,
     pub local_port: u16,
+    pub allow_lan_access: bool,
     pub requests: Arc<AtomicU64>,
     pub cancel: CancellationToken,
     pub http: reqwest::Client,
@@ -51,11 +52,35 @@ fn fail(status: StatusCode, message: &str) -> Response {
         .body(Body::from(serde_json::json!({"error":message}).to_string()))
         .unwrap()
 }
-pub fn is_local_request(headers: &HeaderMap, port: u16) -> bool {
+fn allowed_host(host: &str, port: u16, allow_lan_access: bool) -> bool {
+    if host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}") {
+        return true;
+    }
+    if !allow_lan_access {
+        return false;
+    }
+    let Some((address, host_port)) = host.rsplit_once(':') else {
+        return false;
+    };
+    if host_port != port.to_string() {
+        return false;
+    }
+    address
+        .parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|ip| ip.is_private() || ip.is_link_local())
+}
+pub fn is_allowed_request(headers: &HeaderMap, port: u16, allow_lan_access: bool) -> bool {
+    // Ambiguous authorities/origins must not bypass validation through first-value lookup.
+    if headers.get_all(header::HOST).iter().count() != 1
+        || headers.get_all(header::ORIGIN).iter().count() > 1
+        || headers.get_all("sec-fetch-site").iter().count() > 1
+    {
+        return false;
+    }
     let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
         return false;
     };
-    if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
+    if !allowed_host(host, port, allow_lan_access) {
         return false;
     }
     if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("cross-site") {
@@ -65,9 +90,11 @@ pub fn is_local_request(headers: &HeaderMap, port: u16) -> bool {
         let Ok(origin) = origin.to_str() else {
             return false;
         };
-        if origin != format!("http://127.0.0.1:{port}")
-            && origin != format!("http://localhost:{port}")
-        {
+        let loopback_origin = (host == format!("127.0.0.1:{port}")
+            || host == format!("localhost:{port}"))
+            && (origin == format!("http://127.0.0.1:{port}")
+                || origin == format!("http://localhost:{port}"));
+        if origin != format!("http://{host}") && !loopback_origin {
             return false;
         }
     }
@@ -117,7 +144,7 @@ pub fn upstream_cookie(existing: Option<&str>, entry_token: &str) -> String {
     cookies.push(&own);
     cookies.join("; ")
 }
-pub fn rewrite_location(value: &str, upstream: &url::Url, port: u16) -> String {
+pub fn rewrite_location(value: &str, upstream: &url::Url, host: &str) -> String {
     let Ok(target) = upstream.join(value) else {
         return value.to_owned();
     };
@@ -125,7 +152,7 @@ pub fn rewrite_location(value: &str, upstream: &url::Url, port: u16) -> String {
         return value.to_owned();
     }
     format!(
-        "http://127.0.0.1:{port}{}{}",
+        "http://{host}{}{}",
         target.path(),
         target.query().map(|q| format!("?{q}")).unwrap_or_default()
     )
@@ -187,7 +214,16 @@ async fn target_headers(
     }
     if let Some(referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()) {
         if let Ok(url) = url::Url::parse(referer) {
-            if matches!(url.host_str(), Some("localhost" | "127.0.0.1")) {
+            if url.scheme() == "http"
+                && url.port_or_known_default() == Some(ctx.local_port)
+                && url.host_str().is_some_and(|host| {
+                    allowed_host(
+                        &format!("{host}:{}", ctx.local_port),
+                        ctx.local_port,
+                        ctx.allow_lan_access,
+                    )
+                })
+            {
                 outgoing.insert(
                     header::REFERER,
                     HeaderValue::from_str(&format!(
@@ -208,12 +244,20 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
     if ctx.cancel.is_cancelled() {
         return fail(StatusCode::SERVICE_UNAVAILABLE, "代理已停止");
     }
-    if !is_local_request(request.headers(), ctx.local_port) {
+    if !is_allowed_request(request.headers(), ctx.local_port, ctx.allow_lan_access) {
         return fail(
             StatusCode::FORBIDDEN,
-            "仅允许本机访问；已阻止跨站或异常 Host 请求",
+            "访问地址不被允许；已阻止跨站或异常 Host 请求",
         );
     }
+    // The validated request authority must survive redirects on remote LAN clients.
+    let local_host = request
+        .headers()
+        .get(header::HOST)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     // Use one address snapshot for URL, headers and redirects throughout this request.
     let upstream = ctx.upstream.read().unwrap().clone();
     let mut target = upstream.clone();
@@ -308,7 +352,7 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
         .and_then(|v| v.to_str().ok())
     {
         if let Ok(value) =
-            HeaderValue::from_str(&rewrite_location(location, &upstream, ctx.local_port))
+            HeaderValue::from_str(&rewrite_location(location, &upstream, &local_host))
         {
             forwarded.insert(header::LOCATION, value);
         }
@@ -389,11 +433,19 @@ pub fn additional_routes(
         .cloned()
         .collect())
 }
+fn listen_address(allow_lan_access: bool) -> std::net::Ipv4Addr {
+    if allow_lan_access {
+        std::net::Ipv4Addr::UNSPECIFIED
+    } else {
+        std::net::Ipv4Addr::LOCALHOST
+    }
+}
 pub async fn start(
     routes: &[ServiceRoute],
     fn_id: &str,
     hub: SessionHub,
     counter: Arc<AtomicU64>,
+    allow_lan_access: bool,
 ) -> Result<Vec<ProxyHandle>> {
     validate_routes(routes, fn_id)?;
     let routes: Vec<_> = routes.iter().filter(|r| r.enabled).collect();
@@ -404,7 +456,7 @@ pub async fn start(
     let mut reserved = Vec::new();
     for route in &routes {
         reserved.push(
-            TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, route.local_port))
+            TcpListener::bind((listen_address(allow_lan_access), route.local_port))
                 .await
                 .map_err(|e| {
                     error(format!(
@@ -426,6 +478,7 @@ pub async fn start(
             session: hub.clone(),
             upstream: upstream.clone(),
             local_port: route.local_port,
+            allow_lan_access,
             requests: counter.clone(),
             cancel: cancel.clone(),
             http: http.clone(),
@@ -515,22 +568,47 @@ mod tests {
     fn blocks_dns_rebinding_and_browser_cross_site_requests() {
         let mut h = HeaderMap::new();
         h.insert(header::HOST, "127.0.0.1:18084".parse().unwrap());
-        assert!(is_local_request(&h, 18084));
+        assert!(is_allowed_request(&h, 18084, false));
         h.insert(header::ORIGIN, "https://evil.test".parse().unwrap());
-        assert!(!is_local_request(&h, 18084));
+        assert!(!is_allowed_request(&h, 18084, false));
         h.remove(header::ORIGIN);
         h.insert(header::HOST, "evil.test:18084".parse().unwrap());
-        assert!(!is_local_request(&h, 18084));
+        assert!(!is_allowed_request(&h, 18084, false));
+    }
+    #[test]
+    fn duplicate_security_headers_are_rejected() {
+        for name in [
+            header::HOST,
+            header::ORIGIN,
+            axum::http::HeaderName::from_static("sec-fetch-site"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, "192.168.1.10:18084".parse().unwrap());
+            if name != header::HOST {
+                headers.insert(
+                    name.clone(),
+                    if name == header::ORIGIN {
+                        "http://192.168.1.10:18084"
+                    } else {
+                        "same-origin"
+                    }
+                    .parse()
+                    .unwrap(),
+                );
+            }
+            headers.append(name, "evil.test".parse().unwrap());
+            assert!(!is_allowed_request(&headers, 18084, true));
+        }
     }
     #[test]
     fn only_same_origin_redirects_are_rewritten() {
         let u = url::Url::parse("https://hash.my-nas.fnos.net/").unwrap();
         assert_eq!(
-            rewrite_location("/login?next=a", &u, 18084),
+            rewrite_location("/login?next=a", &u, "127.0.0.1:18084"),
             "http://127.0.0.1:18084/login?next=a"
         );
         assert_eq!(
-            rewrite_location("https://external.test/", &u, 18084),
+            rewrite_location("https://external.test/", &u, "127.0.0.1:18084"),
             "https://external.test/"
         );
     }
@@ -542,6 +620,43 @@ mod tests {
                 .unwrap(),
             "app=x; HttpOnly; SameSite=Lax"
         );
+    }
+    #[test]
+    fn lan_policy_keeps_loopback_default_and_rejects_rebinding_and_cross_site_origins() {
+        assert_eq!(listen_address(false), std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(listen_address(true), std::net::Ipv4Addr::UNSPECIFIED);
+        let mut headers = HeaderMap::new();
+        for host in [
+            "192.168.1.10:18084",
+            "10.0.0.5:18084",
+            "172.16.0.5:18084",
+            "169.254.1.2:18084",
+        ] {
+            headers.insert(header::HOST, host.parse().unwrap());
+            assert!(!is_allowed_request(&headers, 18084, false));
+            assert!(is_allowed_request(&headers, 18084, true));
+            headers.insert(header::ORIGIN, format!("http://{host}").parse().unwrap());
+            assert!(is_allowed_request(&headers, 18084, true));
+            headers.insert(header::ORIGIN, "http://192.168.1.11:18084".parse().unwrap());
+            assert!(!is_allowed_request(&headers, 18084, true));
+            headers.remove(header::ORIGIN);
+        }
+        for host in [
+            "evil.test:18084",
+            "192.168.1.10:18085",
+            "8.8.8.8:18084",
+            "0.0.0.0:18084",
+            "172.32.0.1:18084",
+            "192.168.1.10",
+            "192.168.1.10:018084",
+        ] {
+            headers.insert(header::HOST, host.parse().unwrap());
+            assert!(!is_allowed_request(&headers, 18084, true));
+        }
+        headers.insert(header::HOST, "192.168.1.10:18084".parse().unwrap());
+        headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+        assert!(!is_allowed_request(&headers, 18084, true));
+        assert!(!is_allowed_request(&HeaderMap::new(), 18084, true));
     }
 }
 

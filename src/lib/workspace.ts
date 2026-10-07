@@ -96,6 +96,21 @@ export function useWorkspace() {
   const section = ref<"overview" | "connections" | "services" | "logs" | "settings">("overview");
   const savedConnections = computed(() => connections.filter((c) => c.saved));
   const busy = ref("");
+  const allowLanAccess = ref(false);
+  const settingsReady = ref(false);
+  const anyProxyRunning = computed(() => connections.some((c) => c.proxy.running));
+  async function setAllowLanAccess(enabled: boolean) {
+    if (!settingsReady.value || busy.value) return;
+    if (anyProxyRunning.value) {
+      notify(t("settings.stopProxiesFirst"), true);
+      return;
+    }
+    await run("lan-access", async () => {
+      await invoke("set_allow_lan_access", { enabled });
+      allowLanAccess.value = enabled;
+      notify(t("notice.lanAccessSaved"));
+    });
+  }
   const notice = ref<{ message: string; error: boolean } | null>(null);
   const inventory = computed({
     get: () => current.value.inventory,
@@ -490,8 +505,10 @@ export function useWorkspace() {
     if (!desktop) return;
     try {
       const bootstrap = await invoke<{
+        allowLanAccess: boolean;
         profiles: { profile: Profile; hasSavedPassword: boolean }[];
       }>("get_bootstrap");
+      allowLanAccess.value = bootstrap.allowLanAccess === true;
       if (bootstrap.profiles.length) {
         connections.splice(
           0,
@@ -507,6 +524,7 @@ export function useWorkspace() {
         logs.value = [...logs.value.slice(-199), payload];
       });
       await refresh();
+      settingsReady.value = true;
       timer = setInterval(() => {
         refresh().catch(() => {
           /* App teardown may close IPC before the UI timer. */
@@ -528,6 +546,10 @@ export function useWorkspace() {
   });
   return {
     desktop,
+    allowLanAccess,
+    settingsReady,
+    anyProxyRunning,
+    setAllowLanAccess,
     connections,
     savedConnections,
     selectedConnectionId,
