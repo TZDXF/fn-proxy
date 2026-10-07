@@ -38,6 +38,11 @@ describe("connection actions", () => {
     expect(list).not.toContain('t("nav.connections")');
   });
 
+  it("shows an icon alongside the disconnect label", () => {
+    const list = app.match(/<TabsContent value="connections"([\s\S]*?)<\/TabsContent>/)?.[1];
+    expect(list).toContain('<Icon name="power" />{{ t("common.disconnect") }}');
+  });
+
   it("places disconnect before edit and keeps delete last in the connection list", () => {
     const list = app.match(/<TabsContent value="connections"([\s\S]*?)<\/TabsContent>/)?.[1];
     expect(list).toBeDefined();
