@@ -1,4 +1,5 @@
 import { i18n } from "./i18n";
+import { localize, localizeError } from "./text";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -52,7 +53,7 @@ export function useWorkspace() {
         username: "",
         relay: "",
         authMode: "",
-        message: t("connection.notConnected"),
+        message: { code: "connection.notConnected" },
       } as ConnectionInfo,
       proxy: { running: false, listeners: [], requests: 0 } as ProxyStatus,
     };
@@ -203,7 +204,7 @@ export function useWorkspace() {
       try {
         await invoke("remove_connection", { connectionId: id });
       } catch (error) {
-        if (!disposed) notify(String(error instanceof Error ? error.message : error), true);
+        if (!disposed) notify(localizeError(error), true);
       }
       return;
     }
@@ -232,7 +233,7 @@ export function useWorkspace() {
     try {
       return await action();
     } catch (error) {
-      notify(String(error instanceof Error ? error.message : error), true);
+      notify(localizeError(error), true);
       return undefined;
     } finally {
       busy.value = "";
@@ -293,8 +294,7 @@ export function useWorkspace() {
       await refresh();
       return true;
     } catch (error) {
-      if (!disposed && connections.includes(target))
-        notify(String(error instanceof Error ? error.message : error), true);
+      if (!disposed && connections.includes(target)) notify(localizeError(error), true);
       return undefined;
     } finally {
       target.connecting = false;
@@ -366,7 +366,7 @@ export function useWorkspace() {
     try {
       await addDiscovered(dockerPortService(row));
     } catch (error) {
-      notify(String(error instanceof Error ? error.message : error), true);
+      notify(localizeError(error), true);
     }
   }
   function showEditor(route?: ServiceRoute) {
@@ -427,7 +427,7 @@ export function useWorkspace() {
       else services[index] = route;
       if (await updateServices(services)) editing.value = false;
     } catch (error) {
-      notify(String(error instanceof Error ? error.message : error), true);
+      notify(localizeError(error), true);
     }
   }
   async function remove(route: ServiceRoute) {
@@ -452,9 +452,10 @@ export function useWorkspace() {
         connectionId: selectedConnectionId.value,
         route,
       });
+      const probed = probes.value[route.id]!;
       notify(
-        `${route.name} · HTTP ${probes.value[route.id]!.status} · ${probes.value[route.id]!.message}`,
-        !probes.value[route.id]!.reachable,
+        `${route.name} · HTTP ${probed.status} · ${localize(probed.message)}`,
+        !probed.reachable,
       );
     });
   }
@@ -501,9 +502,25 @@ export function useWorkspace() {
       await openUrl(localUrl(port));
     });
   }
+  async function syncTrayLabels() {
+    if (!desktop) return;
+    try {
+      await invoke("set_tray_labels", {
+        labels: {
+          show: t("tray.show"),
+          quit: t("tray.quit"),
+          tooltip: t("tray.tooltip"),
+        },
+      });
+    } catch {
+      // Tray labels are cosmetic; a failed sync keeps the previous language.
+    }
+  }
+  const stopTraySync = watch(i18n.global.locale, () => void syncTrayLabels());
   onMounted(async () => {
     if (!desktop) return;
     try {
+      await syncTrayLabels();
       const bootstrap = await invoke<{
         allowLanAccess: boolean;
         profiles: { profile: Profile; hasSavedPassword: boolean }[];
@@ -536,6 +553,7 @@ export function useWorkspace() {
   });
   onUnmounted(() => {
     disposed = true;
+    stopTraySync();
     if (timer) clearInterval(timer);
     if (noticeTimer) clearTimeout(noticeTimer);
     unlisten?.();

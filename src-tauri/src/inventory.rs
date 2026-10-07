@@ -1,5 +1,6 @@
 use crate::{
     error::{error, Result},
+    text::Text,
     types::{
         normalize_fnid, validate_upstream, DiscoveredService, InventoryEntry, InventorySource,
         ServiceInventory,
@@ -11,21 +12,23 @@ use std::collections::HashSet;
 /// Preserve every visible entry, including ones that cannot become a remote-port route.
 /// This is an account-scoped registration inventory, never a listener/port scan.
 pub fn parse_inventory(value: &Value, fn_id: &str) -> Result<ServiceInventory> {
-    parse_source(value, fn_id, "desktop", "NAS 桌面入口")
+    parse_source(value, fn_id, "desktop")
 }
 pub fn parse_docker_inventory(value: &Value, fn_id: &str) -> Result<ServiceInventory> {
-    parse_source(value, fn_id, "docker", "Docker 快捷访问")
+    parse_source(value, fn_id, "docker")
 }
-fn parse_source(
-    value: &Value,
-    fn_id: &str,
-    source_id: &str,
-    source_name: &str,
-) -> Result<ServiceInventory> {
+fn source_name(source_id: &str) -> &'static str {
+    if source_id == "docker" {
+        "inventory.sourceDocker"
+    } else {
+        "inventory.sourceDesktop"
+    }
+}
+fn parse_source(value: &Value, fn_id: &str, source_id: &str) -> Result<ServiceInventory> {
     let fn_id = normalize_fnid(fn_id)?;
     let list = value["data"]["list"]
         .as_array()
-        .ok_or_else(|| error("NAS 入口响应缺少 data.list，无法确认清单是否完整"))?;
+        .ok_or_else(|| error("inventory.listMissing"))?;
     let mut entries = Vec::new();
     let mut services = Vec::new();
     let mut seen = HashSet::new();
@@ -44,14 +47,13 @@ fn parse_source(
         } else {
             None
         };
+        // Fallback names stay locale-neutral because they share a field with
+        // server-provided titles, which are never translated.
         let fallback_name = if source_id == "docker" {
-            format!(
-                "Docker 服务 :{}",
-                port.map(|p| p.to_string())
-                    .unwrap_or_else(|| "未知端口".to_owned())
-            )
+            port.map(|p| format!("Docker :{p}"))
+                .unwrap_or_else(|| "Docker".to_owned())
         } else {
-            "NAS 入口".to_owned()
+            "NAS".to_owned()
         };
         let name = entry["title"]
             .as_str()
@@ -77,25 +79,13 @@ fn parse_source(
             })
             .map(|url| url.path().to_owned());
         let (status, reason) = if port.is_none() {
-            (
-                "no-port",
-                "没有有效独立端口；可能是 NAS 内置入口或相对路径，不能据此建立端口代理",
-            )
+            ("no-port", Text::new("inventory.entryNoPort"))
         } else if domain.is_none() {
-            (
-                "no-domain",
-                "有端口但没有 fnDomain，尚未得到 FN Connect 服务子域名",
-            )
+            ("no-domain", Text::new("inventory.entryNoDomain"))
         } else if valid.is_none() {
-            (
-                "invalid-domain",
-                "远程子域名不符合当前 FN ID 的安全规则，已拒绝",
-            )
+            ("invalid-domain", Text::new("inventory.entryInvalidDomain"))
         } else {
-            (
-                "mapped",
-                "服务端提供了端口与子域名配对；实际可达性仍需单独测试",
-            )
+            ("mapped", Text::new("inventory.entryMapped"))
         };
         if let (Some(port), Some(domain), Some(upstream)) = (port, domain, upstream.as_ref()) {
             if seen.insert((port, upstream.clone())) {
@@ -105,13 +95,17 @@ fn parse_source(
                     nas_port: port,
                     upstream: upstream.clone(),
                     fn_domain: domain.to_owned(),
-                    source: format!("{source_name}：uri.port ↔ uri.fnDomain"),
+                    source: Text::new(if source_id == "docker" {
+                        "inventory.serviceSourceDocker"
+                    } else {
+                        "inventory.serviceSourceDesktop"
+                    }),
                 });
             }
         }
         entries.push(InventoryEntry {
             id: format!("{source_id}:{}:{index}", key.unwrap_or("entry")),
-            source: source_name.to_owned(),
+            source: Text::new(source_name(source_id)),
             app_id,
             name,
             nas_port: port,
@@ -119,7 +113,7 @@ fn parse_source(
             upstream: if port.is_some() { upstream } else { None },
             path,
             status: status.to_owned(),
-            reason: reason.to_owned(),
+            reason,
         });
     }
     let mapped_entries = entries.iter().filter(|e| e.status == "mapped").count();
@@ -127,17 +121,17 @@ fn parse_source(
         docker: None,
         sources: vec![InventorySource {
             id: source_id.to_owned(),
-            name: source_name.to_owned(),
+            name: Text::new(source_name(source_id)),
             status: "ok".to_owned(),
             count: Some(entries.len()),
-            message: "当前账号可见的注册映射已读取；不等于全部监听端口".to_owned(),
+            message: Text::new("inventory.sourceReadOk"),
         }],
         total_entries: entries.len(),
         mapped_entries,
         unmapped_entries: entries.len() - mapped_entries,
         services,
         entries,
-        scope: "当前账号可见的已注册入口；不等于 NAS 所有监听端口，也不保证入口当前可达".to_owned(),
+        scope: Text::new("inventory.scopeSingle"),
     })
 }
 
@@ -151,10 +145,7 @@ pub fn merge_inventories(
     let mut services = Vec::new();
     let mut seen = HashSet::new();
     let mut successful_sources = 0;
-    for (id, name, result) in [
-        ("desktop", "NAS 桌面入口", desktop),
-        ("docker", "Docker 快捷访问", docker),
-    ] {
+    for (id, result) in [("desktop", desktop), ("docker", docker)] {
         match result {
             Ok(report) => {
                 successful_sources += 1;
@@ -168,40 +159,40 @@ pub fn merge_inventories(
             }
             Err(_) => sources.push(InventorySource {
                 id: id.to_owned(),
-                name: name.to_owned(),
+                name: Text::new(source_name(id)),
                 status: "unavailable".to_owned(),
                 count: None,
-                message:
-                    "读取失败：可能无权限、版本不支持、响应结构变化或连接异常；该来源不计为空列表"
-                        .to_owned(),
+                message: Text::new("inventory.sourceReadFailed"),
             }),
         }
     }
     if successful_sources == 0 {
-        return Err(error(
-            "桌面入口与 Docker 映射均无法读取，请检查 NAS 登录、权限及版本",
-        ));
+        return Err(error("inventory.sourcesUnavailable"));
     }
     let mapped_entries = entries.iter().filter(|e| e.status == "mapped").count();
     Ok(ServiceInventory {
         docker: None,
-        sources, total_entries: entries.len(), mapped_entries, unmapped_entries: entries.len() - mapped_entries,
-        entries, services,
-        scope: "合并当前账号可见的 NAS 桌面与 Docker 快捷访问注册映射；部分来源失败会单独标注，不代表 NAS 全部监听端口".to_owned(),
+        sources,
+        total_entries: entries.len(),
+        mapped_entries,
+        unmapped_entries: entries.len() - mapped_entries,
+        entries,
+        services,
+        scope: Text::new("inventory.scopeMerged"),
     })
 }
 
 pub fn unavailable_registries() -> ServiceInventory {
     ServiceInventory {
         docker: None,
-        sources: [("desktop", "NAS 桌面入口"), ("docker", "Docker 快捷访问")]
+        sources: ["desktop", "docker"]
             .into_iter()
-            .map(|(id, name)| InventorySource {
+            .map(|id| InventorySource {
                 id: id.to_owned(),
-                name: name.to_owned(),
+                name: Text::new(source_name(id)),
                 status: "unavailable".to_owned(),
                 count: None,
-                message: "远程注册来源未读取；容器发布端口不能据此推断远程域名".to_owned(),
+                message: Text::new("inventory.registriesUnavailable"),
             })
             .collect(),
         total_entries: 0,
@@ -209,8 +200,7 @@ pub fn unavailable_registries() -> ServiceInventory {
         unmapped_entries: 0,
         services: Vec::new(),
         entries: Vec::new(),
-        scope: "仅取得容器发布端口元数据，远程注册来源未读取；不宣称端口已有 FN Connect 域名"
-            .to_owned(),
+        scope: Text::new("inventory.scopeContainersOnly"),
     }
 }
 
@@ -244,7 +234,10 @@ mod tests {
             report.entries[1].app_id.as_deref(),
             Some("fixture-container-prefix")
         );
-        assert_eq!(report.entries[1].source, "Docker 快捷访问");
+        assert_eq!(
+            report.entries[1].source,
+            Text::new("inventory.sourceDocker")
+        );
         assert!(report.entries[0].id.starts_with("desktop:"));
         assert!(report.entries[1].id.starts_with("docker:"));
         assert_eq!(report.sources[1].count, Some(3));

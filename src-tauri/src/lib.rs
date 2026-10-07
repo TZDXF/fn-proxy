@@ -9,6 +9,7 @@ mod proxy;
 mod resolver;
 mod service_sync;
 mod storage;
+mod text;
 mod types;
 mod updates;
 use std::sync::Arc;
@@ -48,6 +49,7 @@ pub fn run() {
             commands::start_proxy,
             commands::update_services,
             commands::stop_proxy,
+            desktop::set_tray_labels,
             commands::remove_connection
         ])
         .build(tauri::generate_context!())

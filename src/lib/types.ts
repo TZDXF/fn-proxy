@@ -1,4 +1,5 @@
 import { i18n } from "./i18n";
+import type { BackendText } from "./text";
 
 export interface ServiceRoute {
   id: string;
@@ -22,7 +23,7 @@ export interface ConnectionInfo {
   username: string;
   relay: string;
   authMode: string;
-  message: string;
+  message: BackendText;
 }
 export interface ListenerInfo {
   name: string;
@@ -50,11 +51,11 @@ export interface DiscoveredService {
   nasPort: number;
   upstream: string;
   fnDomain: string;
-  source: string;
+  source: BackendText;
 }
 export interface InventoryEntry {
   id: string;
-  source: string;
+  source: BackendText;
   appId: string | null;
   name: string;
   nasPort: number | null;
@@ -62,14 +63,14 @@ export interface InventoryEntry {
   upstream: string | null;
   path: string | null;
   status: "mapped" | "no-port" | "no-domain" | "invalid-domain";
-  reason: string;
+  reason: BackendText;
 }
 export interface InventorySource {
   id: string;
-  name: string;
+  name: BackendText;
   status: "ok" | "unavailable";
   count: number | null;
-  message: string;
+  message: BackendText;
 }
 export interface DockerPortRow {
   id: string;
@@ -89,7 +90,7 @@ export interface DockerPortRow {
     | "not-published"
     | "unsupported-protocol"
     | "ambiguous";
-  reason: string;
+  reason: BackendText;
 }
 export interface DockerPortInventory {
   containers: number;
@@ -99,7 +100,7 @@ export interface DockerPortInventory {
   unconfirmedPorts: number;
   registryAvailable: boolean;
   rows: DockerPortRow[];
-  scope: string;
+  scope: BackendText;
 }
 export interface ServiceInventory {
   docker: DockerPortInventory | null;
@@ -109,17 +110,18 @@ export interface ServiceInventory {
   unmappedEntries: number;
   services: DiscoveredService[];
   entries: InventoryEntry[];
-  scope: string;
+  scope: BackendText;
 }
 export interface LogEntry {
   time: number;
   level: "info" | "success" | "warn" | "error";
-  message: string;
+  label: string;
+  message: BackendText;
 }
 export interface RouteProbe {
   status: number;
   reachable: boolean;
-  message: string;
+  message: BackendText;
 }
 export function normalizeFnId(input: string): string {
   const id = input.trim().toLowerCase();
@@ -183,7 +185,7 @@ export function dockerPortService(row: DockerPortRow): DiscoveredService {
     nasPort: row.nasPort,
     upstream: row.upstream,
     fnDomain: row.fnDomain,
-    source: i18n.global.t("docker.source"),
+    source: { code: "docker.source" },
   };
 }
 export function dockerPortStatus(status: DockerPortRow["status"]): string {

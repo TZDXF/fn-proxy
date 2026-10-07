@@ -1,6 +1,6 @@
 use crate::{
     auth::NasSession,
-    error::{error, Result},
+    error::{error, error_with, Result},
     types::{validate_routes, validate_upstream, ListenerInfo, ServiceRoute},
 };
 use axum::{
@@ -45,11 +45,16 @@ pub struct ProxyHandle {
     pub cancel: CancellationToken,
     pub task: JoinHandle<()>,
 }
-fn fail(status: StatusCode, message: &str) -> Response {
+/// Proxy error responses are consumed by arbitrary API clients in a browser,
+/// so they carry a stable machine code plus a locale-independent message
+/// instead of text from a specific UI locale.
+fn fail(status: StatusCode, code: &str, message: &str) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
-        .body(Body::from(serde_json::json!({"error":message}).to_string()))
+        .body(Body::from(
+            serde_json::json!({"code":code,"error":message}).to_string(),
+        ))
         .unwrap()
 }
 fn allowed_host(host: &str, port: u16, allow_lan_access: bool) -> bool {
@@ -191,7 +196,7 @@ async fn target_headers(
         .read()
         .await
         .clone()
-        .ok_or_else(|| error("NAS 尚未登录或认证连接已失效"))?;
+        .ok_or_else(|| error("proxy.sessionUnavailable"))?;
     let token = session.entry_token.read().await;
     let mut outgoing = clean_headers(headers);
     outgoing.insert(
@@ -200,7 +205,7 @@ async fn target_headers(
             headers.get(header::COOKIE).and_then(|v| v.to_str().ok()),
             &token,
         ))
-        .map_err(|_| error("服务访问凭据无效"))?,
+        .map_err(|_| error("proxy.credentialHeaderInvalid"))?,
     );
     outgoing.remove("sec-fetch-site");
     outgoing.remove("sec-fetch-mode");
@@ -242,12 +247,17 @@ async fn target_headers(
 }
 async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Response {
     if ctx.cancel.is_cancelled() {
-        return fail(StatusCode::SERVICE_UNAVAILABLE, "代理已停止");
+        return fail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "proxyStopped",
+            "The proxy has stopped.",
+        );
     }
     if !is_allowed_request(request.headers(), ctx.local_port, ctx.allow_lan_access) {
         return fail(
             StatusCode::FORBIDDEN,
-            "访问地址不被允许；已阻止跨站或异常 Host 请求",
+            "hostNotAllowed",
+            "The request address is not allowed; cross-site or unexpected Host requests are blocked.",
         );
     }
     // The validated request authority must survive redirects on remote LAN clients.
@@ -268,7 +278,8 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
         Err(_) => {
             return fail(
                 StatusCode::UNAUTHORIZED,
-                "NAS 会话不可用，请在桌面应用中重新连接",
+                "sessionExpired",
+                "The NAS session is unavailable. Reconnect in the FN Proxy desktop app.",
             )
         }
     };
@@ -282,7 +293,13 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
         let (mut parts, body) = request.into_parts();
         let ws = match WebSocketUpgrade::from_request_parts(&mut parts, &ctx).await {
             Ok(ws) => ws,
-            Err(_) => return fail(StatusCode::BAD_REQUEST, "WebSocket 握手无效"),
+            Err(_) => {
+                return fail(
+                    StatusCode::BAD_REQUEST,
+                    "wsHandshakeInvalid",
+                    "The WebSocket handshake is invalid.",
+                )
+            }
         };
         request = Request::from_parts(parts, body);
         target
@@ -294,7 +311,13 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
             .unwrap();
         let mut remote = match target.as_str().into_client_request() {
             Ok(v) => v,
-            Err(_) => return fail(StatusCode::BAD_REQUEST, "WebSocket 地址无效"),
+            Err(_) => {
+                return fail(
+                    StatusCode::BAD_REQUEST,
+                    "wsUrlInvalid",
+                    "The WebSocket address is invalid.",
+                )
+            }
         };
         for (name, value) in headers
             .iter()
@@ -311,7 +334,13 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
             tokio::time::timeout(std::time::Duration::from_secs(25), connect_async(remote)).await;
         let (socket, response) = match connected {
             Ok(Ok(v)) => v,
-            _ => return fail(StatusCode::BAD_GATEWAY, "上游 WebSocket 连接失败"),
+            _ => {
+                return fail(
+                    StatusCode::BAD_GATEWAY,
+                    "wsUpstreamFailed",
+                    "The upstream WebSocket connection failed.",
+                )
+            }
         };
         let selected = response
             .headers()
@@ -334,7 +363,13 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
     let response =
         match tokio::time::timeout(std::time::Duration::from_secs(30), outgoing.send()).await {
             Ok(Ok(r)) => r,
-            _ => return fail(StatusCode::BAD_GATEWAY, "连接 NAS 服务失败或等待响应超时"),
+            _ => {
+                return fail(
+                    StatusCode::BAD_GATEWAY,
+                    "upstreamUnavailable",
+                    "Connecting to the NAS service failed or timed out.",
+                )
+            }
         };
     let status = response.status();
     let mut forwarded = clean_headers(response.headers());
@@ -419,7 +454,7 @@ pub fn additional_routes(
                 && listener.nas_port == route.nas_port
                 && listener.name == route.name
         }) {
-            return Err(error("请先停止代理再编辑或删除已有映射"));
+            return Err(error("proxy.stopBeforeEditRoutes"));
         }
     }
     Ok(routes
@@ -450,7 +485,7 @@ pub async fn start(
     validate_routes(routes, fn_id)?;
     let routes: Vec<_> = routes.iter().filter(|r| r.enabled).collect();
     if routes.is_empty() {
-        return Err(error("至少启用一个服务映射"));
+        return Err(error("proxy.noServiceEnabled"));
     }
     // Reserve every port first, so one conflict cannot leave a half-started proxy.
     let mut reserved = Vec::new();
@@ -459,10 +494,13 @@ pub async fn start(
             TcpListener::bind((listen_address(allow_lan_access), route.local_port))
                 .await
                 .map_err(|e| {
-                    error(format!(
-                        "无法监听本地端口 {}：{e}；请选择其他端口",
-                        route.local_port
-                    ))
+                    error_with(
+                        "proxy.listenFailed",
+                        [
+                            ("port", route.local_port.to_string()),
+                            ("detail", e.to_string()),
+                        ],
+                    )
                 })?,
         );
     }
@@ -524,7 +562,7 @@ pub fn update_upstreams(
                         && handle.info.local_url
                             == format!("http://127.0.0.1:{}/", route.local_port)
                 })
-                .ok_or_else(|| error("域名同步时服务映射已变化，拒绝更新运行中的代理"))?;
+                .ok_or_else(|| error("proxy.routesChangedDuringSync"))?;
             Ok((
                 route.upstream.clone(),
                 validate_upstream(&route.upstream, fn_id)?,

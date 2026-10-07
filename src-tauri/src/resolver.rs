@@ -75,7 +75,7 @@ pub async fn resolve(id: &str) -> Result<url::Url> {
             .unwrap()
             .captures(&page)
             .and_then(|c| c.get(1))
-            .ok_or_else(|| error("FN Connect 入口已更新，未找到解析脚本"))?
+            .ok_or_else(|| error("resolver.scriptMissing"))?
             .as_str()
             .to_owned();
     let source = client
@@ -91,7 +91,7 @@ pub async fn resolve(id: &str) -> Result<url::Url> {
             .captures(&source)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_owned())
-            .ok_or_else(|| error("FN ID 解析签名格式已变化，请更新应用"))
+            .ok_or_else(|| error("resolver.signatureChanged"))
     };
     let key = capture(r#"ApiKey="([^"]+)""#)?;
     let prefix = capture(r#""PREFIX","([^"]+)""#)?;
@@ -109,7 +109,7 @@ pub async fn resolve(id: &str) -> Result<url::Url> {
         .json()
         .await?;
     if response["code"].as_i64() != Some(0) {
-        return Err(error("FN ID 解析失败，请检查 FN ID 和 NAS 在线状态"));
+        return Err(error("resolver.resolveFailed"));
     }
     let expected = format!("{id}.fnos.net");
     let relay = response["data"]["fn"]
@@ -124,9 +124,7 @@ pub async fn resolve(id: &str) -> Result<url::Url> {
                 .then_some(url)
             })
         })
-        .ok_or_else(|| {
-            error("未找到当前 NAS 的 FN Connect 中继地址；本应用不会自动跳转到内网 IP")
-        })?;
+        .ok_or_else(|| error("resolver.relayMissing"))?;
     Ok(relay)
 }
 #[cfg(test)]

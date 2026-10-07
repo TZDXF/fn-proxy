@@ -31,7 +31,7 @@ const service = (nasPort = 8084): DiscoveredService => ({
   nasPort,
   upstream: "https://api.my-nas.fnos.net/",
   fnDomain: "api",
-  source: "fixture",
+  source: { code: "fixture" },
 });
 const info = (fnId: string): ConnectionInfo => ({
   connected: true,
@@ -39,7 +39,7 @@ const info = (fnId: string): ConnectionInfo => ({
   username: "admin",
   relay: "remote",
   authMode: "fixture",
-  message: "connected",
+  message: { code: "connected" },
 });
 beforeEach(() => {
   mocks.desktop = false;
@@ -59,7 +59,7 @@ describe("multiple connection workspaces", () => {
     w.password.value = "draft";
     w.connection.value = info("my-nas");
     w.proxy.value = { running: true, listeners: [], requests: 7 };
-    w.probes.value.api = { status: 200, reachable: true, message: "ok" };
+    w.probes.value.api = { status: 200, reachable: true, message: { code: "ok" } };
     w.addConnection();
     expect(w.selectedConnectionId.value).not.toBe(first);
     expect(w.profile.value.fnId).toBe("");

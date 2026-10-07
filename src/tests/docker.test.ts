@@ -13,7 +13,7 @@ const mapped: DockerPortRow = {
   upstream: "https://fixture-0.my-nas.fnos.net/",
   fnDomain: "fixture-0",
   status: "mapped",
-  reason: "fixture",
+  reason: { code: "fixture" },
 };
 describe("Docker port conversion", () => {
   it("uses the published host port instead of the private container port", () => {

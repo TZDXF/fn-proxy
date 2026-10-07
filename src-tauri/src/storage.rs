@@ -36,7 +36,7 @@ pub fn save_profiles(path: &Path, profiles: &WorkspaceProfiles) -> Result<()> {
 #[cfg(windows)]
 fn entry(fn_id: &str, username: &str) -> Result<keyring::Entry> {
     keyring::Entry::new("net.fnproxy.desktop", &format!("{fn_id}/{username}"))
-        .map_err(|_| error("无法打开 Windows 凭据管理器"))
+        .map_err(|_| error("storage.credentialManagerOpen"))
 }
 pub fn saved_password(fn_id: &str, username: &str) -> Result<Zeroizing<String>> {
     #[cfg(windows)]
@@ -44,12 +44,12 @@ pub fn saved_password(fn_id: &str, username: &str) -> Result<Zeroizing<String>> 
         entry(fn_id, username)?
             .get_password()
             .map(Zeroizing::new)
-            .map_err(|_| error("未找到已保存的密码，请重新输入"))
+            .map_err(|_| error("storage.savedPasswordMissing"))
     }
     #[cfg(not(windows))]
     {
         let _ = (fn_id, username);
-        Err(error("当前版本仅在 Windows 上支持安全保存密码"))
+        Err(error("storage.windowsOnly"))
     }
 }
 pub fn store_password(fn_id: &str, username: &str, password: &str) -> Result<()> {
@@ -57,12 +57,12 @@ pub fn store_password(fn_id: &str, username: &str, password: &str) -> Result<()>
     {
         entry(fn_id, username)?
             .set_password(password)
-            .map_err(|_| error("密码保存到 Windows 凭据管理器失败"))
+            .map_err(|_| error("storage.credentialSaveFailed"))
     }
     #[cfg(not(windows))]
     {
         let _ = (fn_id, username, password);
-        Err(error("当前平台不支持安全保存密码"))
+        Err(error("storage.platformUnsupported"))
     }
 }
 pub fn delete_password(fn_id: &str, username: &str) -> Result<()> {
@@ -73,7 +73,7 @@ pub fn delete_password(fn_id: &str, username: &str) -> Result<()> {
     {
         match entry(fn_id, username)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err(error("无法删除已保存的凭据")),
+            Err(_) => Err(error("storage.credentialDeleteFailed")),
         }
     }
     #[cfg(not(windows))]

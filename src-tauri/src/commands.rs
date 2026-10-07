@@ -1,8 +1,9 @@
 use crate::{
     auth::NasSession,
-    error::{error, Result},
+    error::{error, error_with, Result},
     proxy::{self, ProxyHandle, SessionHub},
     resolver, service_sync, storage,
+    text::Text,
     types::*,
 };
 use std::{
@@ -37,7 +38,7 @@ pub struct ConnectionState {
     pub operation: Mutex<()>,
     credentials: Mutex<Option<Credentials>>,
     monitor: Mutex<Option<CancellationToken>>,
-    domain_warning: StdMutex<String>,
+    domain_warning: StdMutex<Vec<Text>>,
     logs: Arc<StdMutex<VecDeque<LogEntry>>>,
 }
 impl ConnectionState {
@@ -53,11 +54,11 @@ impl ConnectionState {
             operation: Mutex::new(()),
             credentials: Mutex::new(None),
             monitor: Mutex::new(None),
-            domain_warning: StdMutex::new(String::new()),
+            domain_warning: StdMutex::new(Vec::new()),
             logs,
         }
     }
-    fn log(&self, app: &AppHandle, level: &str, message: impl Into<String>) {
+    fn log(&self, app: &AppHandle, level: &str, message: Text) {
         let info = self.info.read().unwrap().clone();
         let profile = self.profile();
         let fn_id = if info.fn_id.is_empty() {
@@ -73,7 +74,8 @@ impl ConnectionState {
         let entry = LogEntry {
             time: resolver::millis(),
             level: level.to_owned(),
-            message: format!("[{label}] {}", message.into()),
+            label,
+            message,
         };
         let mut logs = self.logs.lock().unwrap();
         logs.push_back(entry.clone());
@@ -130,14 +132,14 @@ impl AppState {
             .unwrap()
             .get(id)
             .cloned()
-            .ok_or_else(|| error("连接不存在，请先登录该连接"))
+            .ok_or_else(|| error("workspace.connectionMissing"))
     }
     fn ensure_connection(&self, id: &str) -> Result<Arc<ConnectionState>> {
         if id.is_empty()
             || id.len() > 64
             || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         {
-            return Err(error("连接 ID 无效"));
+            return Err(error("workspace.connectionIdInvalid"));
         }
         let mut connections = self.connections.lock().unwrap();
         Ok(connections
@@ -247,23 +249,24 @@ async fn apply_domain_inventory(
     state.log(
         app,
         "info",
-        format!(
-            "已按固定 NAS 端口更新 {} 个服务的远程域名，本地端口保持不变",
-            result.changed
+        Text::with(
+            "logs.domainsUpdated",
+            [("count", result.changed.to_string())],
         ),
     );
     Ok(())
 }
-fn report_domain_warnings(app: &AppHandle, state: &ConnectionState, warnings: &[String]) {
-    let warning = warnings.join("；");
+fn report_domain_warnings(app: &AppHandle, state: &ConnectionState, warnings: &[Text]) {
     let changed = {
         let mut previous = state.domain_warning.lock().unwrap();
-        let changed = *previous != warning;
-        *previous = warning.clone();
+        let changed = *previous != warnings;
+        *previous = warnings.to_vec();
         changed
     };
-    if changed && !warning.is_empty() {
-        state.log(app, "warn", warning);
+    if changed {
+        for warning in warnings {
+            state.log(app, "warn", warning.clone());
+        }
     }
 }
 async fn refresh_domains(
@@ -288,14 +291,14 @@ async fn establish(
     let fn_id = normalize_fnid(&input.fn_id)?;
     let username = input.username.trim().to_owned();
     if username.is_empty() {
-        return Err(error("请输入 NAS 用户名"));
+        return Err(error("workspace.usernameRequired"));
     }
     let password = match input.password.filter(|s| !s.is_empty()) {
         Some(s) => Zeroizing::new(s),
         None => {
             let profile = state.profile();
             if !profile.remember || profile.fn_id != fn_id || profile.username != username {
-                return Err(error("当前连接没有此账号的已保存密码，请重新输入"));
+                return Err(error("workspace.noSavedPassword"));
             }
             storage::saved_password(&fn_id, &username)?
         }
@@ -311,20 +314,12 @@ async fn establish(
     *state.info.write().unwrap() = ConnectionInfo {
         fn_id: fn_id.clone(),
         username: username.clone(),
-        message: "正在解析 FN ID 并连接远程入口…".to_owned(),
+        message: Text::new("logs.resolvingEntry"),
         ..Default::default()
     };
-    state.log(
-        app,
-        "info",
-        "正在解析 FN ID（仅选择远程中继，不使用内网 IP）",
-    );
+    state.log(app, "info", Text::new("logs.resolving"));
     let base = resolver::resolve(&fn_id).await?;
-    state.log(
-        app,
-        "info",
-        "远程入口已找到，正在执行加密登录和服务凭据交换",
-    );
+    state.log(app, "info", Text::new("logs.relayFound"));
     let nas = NasSession::login(
         base,
         &fn_id,
@@ -342,11 +337,7 @@ async fn establish(
     });
     *state.session.write().await = Some(nas.clone());
     *state.info.write().unwrap() = nas.info.clone();
-    state.log(
-        app,
-        "success",
-        "NAS 自动登录成功，entry-token 已在后端内存中就绪",
-    );
+    state.log(app, "success", Text::new("logs.loginSuccess"));
     spawn_monitor(app.clone(), state.clone(), nas.clone()).await;
     Ok(nas.info.clone())
 }
@@ -357,11 +348,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
     tauri::async_runtime::spawn(async move {
         let initial = tokio::select! { _=cancel.cancelled()=>return, result=refresh_domains(&app, &manager, &state, &current)=>result };
         if initial.is_err() {
-            report_domain_warnings(
-                &app,
-                &state,
-                &["服务域名读取失败，保留已有地址，稍后重试".to_owned()],
-            );
+            report_domain_warnings(&app, &state, &[Text::new("logs.domainReadFailed")]);
         }
         let mut domains_refreshed = tokio::time::Instant::now();
         let mut tick = tokio::time::interval(Duration::from_secs(15));
@@ -377,18 +364,14 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
                 if domains_refreshed.elapsed() >= Duration::from_secs(60) {
                     let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
                     if updated.is_err() {
-                        report_domain_warnings(
-                            &app,
-                            &state,
-                            &["服务域名同步失败，保留已有地址，稍后重试".to_owned()],
-                        );
+                        report_domain_warnings(&app, &state, &[Text::new("logs.domainSyncFailed")]);
                     }
                     domains_refreshed = tokio::time::Instant::now();
                 }
                 if refreshed.elapsed() >= Duration::from_secs(15 * 60) {
                     let updated = tokio::select! {_=cancel.cancelled()=>break,result=current.refresh_entry_token()=>result};
                     if updated.is_ok() {
-                        state.log(&app, "info", "服务访问凭据已更新（不记录凭据值）");
+                        state.log(&app, "info", Text::new("logs.credentialsRefreshed"));
                     }
                     refreshed = tokio::time::Instant::now();
                 }
@@ -398,7 +381,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
             if cancel.is_cancelled() {
                 break;
             }
-            state.log(&app, "warn", "NAS 认证连接中断，尝试一次自动重新登录");
+            state.log(&app, "warn", Text::new("logs.reconnecting"));
             state.info.write().unwrap().connected = false;
             let credentials = state.credentials.lock().await.clone();
             let Some(credentials) = credentials else {
@@ -422,11 +405,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
                     current = nas;
                     *state.session.write().await = Some(current.clone());
                     *state.info.write().unwrap() = current.info.clone();
-                    state.log(
-                        &app,
-                        "success",
-                        "认证连接已恢复，现有本地监听继续使用新凭据",
-                    );
+                    state.log(&app, "success", Text::new("logs.reconnected"));
                     refreshed = tokio::time::Instant::now();
                     drop(_guard);
                     let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
@@ -434,19 +413,15 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
                         report_domain_warnings(
                             &app,
                             &state,
-                            &["重连后服务域名同步失败，保留已有地址，稍后重试".to_owned()],
+                            &[Text::new("logs.domainSyncAfterReconnectFailed")],
                         );
                     }
                     domains_refreshed = tokio::time::Instant::now();
                 }
                 Err(e) => {
                     *state.session.write().await = None;
-                    state.info.write().unwrap().message = e.to_string();
-                    state.log(
-                        &app,
-                        "error",
-                        "自动重新登录失败；为避免锁定账号，已停止重试，请手动测试连接",
-                    );
+                    state.info.write().unwrap().message = e.text();
+                    state.log(&app, "error", Text::new("logs.reconnectFailed"));
                     break;
                 }
             }
@@ -479,7 +454,7 @@ async fn set_lan_access(manager: &AppState, enabled: bool) -> Result<()> {
     }
     for connection in manager.all() {
         if !connection.proxies.lock().await.is_empty() {
-            return Err(error("请先停止所有连接的代理，再修改局域网访问设置"));
+            return Err(error("workspace.stopProxiesBeforeLan"));
         }
     }
     // Save first: a failed write must not change the effective listening policy.
@@ -533,8 +508,8 @@ pub async fn connect_nas(
     match establish(&app, &state, input).await {
         Ok(v) => Ok(v),
         Err(e) => {
-            state.info.write().unwrap().message = e.to_string();
-            state.log(&app, "error", e.to_string());
+            state.info.write().unwrap().message = e.text();
+            state.log(&app, "error", e.text());
             Err(e)
         }
     }
@@ -558,7 +533,7 @@ pub async fn disconnect_nas(
     }
     *state.credentials.lock().await = None;
     *state.info.write().unwrap() = ConnectionInfo::default();
-    state.log(&app, "info", "已断开当前连接并停止其代理监听");
+    state.log(&app, "info", Text::new("logs.disconnected"));
     Ok(())
 }
 async fn persist_login_profile(
@@ -576,11 +551,11 @@ async fn persist_login_profile(
     profile.fn_id = normalize_fnid(&profile.fn_id)?;
     profile.username = profile.username.trim().to_owned();
     if profile.username.is_empty() {
-        return Err(error("请输入 NAS 用户名"));
+        return Err(error("workspace.usernameRequired"));
     }
     validate_routes(&profile.services, &profile.fn_id)?;
     if profile.auto_connect && !profile.remember {
-        return Err(error("启动时自动登录需要先选择安全保存密码"));
+        return Err(error("workspace.autoConnectNeedsRemember"));
     }
     let credentials = state
         .credentials
@@ -595,7 +570,7 @@ async fn persist_login_profile(
         let password = password
             .or_else(|| credentials.as_ref().map(|c| c.password.clone()))
             .or_else(|| storage::saved_password(&profile.fn_id, &profile.username).ok())
-            .ok_or_else(|| error("请输入要保存的密码，或取消保存密码"))?;
+            .ok_or_else(|| error("workspace.passwordRequiredToSave"))?;
         storage::store_password(&profile.fn_id, &profile.username, &password)?;
     } else if !manager.password_used_by_other(&profile) {
         storage::delete_password(&profile.fn_id, &profile.username)?;
@@ -627,11 +602,9 @@ pub async fn save_login(
 ) -> Result<bool> {
     let password_saved =
         persist_login_profile(state.inner(), connection_id.clone(), profile, password).await?;
-    state.connection(&connection_id)?.log(
-        &app,
-        "success",
-        "连接配置已保存，未发起连接；密码仅保存到 Windows 凭据管理器",
-    );
+    state
+        .connection(&connection_id)?
+        .log(&app, "success", Text::new("logs.profileSaved"));
     Ok(password_saved)
 }
 #[tauri::command]
@@ -657,11 +630,7 @@ pub async fn forget_login(
         current.remember = false;
     }
     *state.profile.lock().unwrap() = profile;
-    state.log(
-        &app,
-        "info",
-        "当前连接不再保存密码，不影响其他连接的保存凭据",
-    );
+    state.log(&app, "info", Text::new("logs.passwordForgotten"));
     Ok(())
 }
 #[tauri::command]
@@ -678,7 +647,7 @@ pub async fn discover_services(
         .read()
         .await
         .clone()
-        .ok_or_else(|| error("请先登录 NAS"))?;
+        .ok_or_else(|| error("workspace.loginRequired"))?;
     let inventory = session.inventory().await?;
     let _workspace_guard = manager.operation.lock().await;
     let _guard = state.operation.lock().await;
@@ -699,7 +668,7 @@ pub async fn get_service_inventory(
         .read()
         .await
         .clone()
-        .ok_or_else(|| error("请先登录 NAS"))?;
+        .ok_or_else(|| error("workspace.loginRequired"))?;
     let inventory = session.inventory().await?;
     let _workspace_guard = manager.operation.lock().await;
     let _guard = state.operation.lock().await;
@@ -720,7 +689,7 @@ pub async fn probe_service(
         .read()
         .await
         .clone()
-        .ok_or_else(|| error("请先登录 NAS"))?;
+        .ok_or_else(|| error("workspace.loginRequired"))?;
     let url = validate_upstream(&route.upstream, &session.info.fn_id)?;
     let token = session.entry_token.read().await.to_string();
     let client = reqwest::Client::builder()
@@ -736,13 +705,12 @@ pub async fn probe_service(
     Ok(RouteProbe {
         status,
         reachable: (200..400).contains(&status),
-        message: match status {
-            200..=399 => "服务入口可达；具体 API 可能还需要应用自己的认证",
-            401 => "已收到服务响应，但该应用可能需要自身登录或 API Key",
-            403 => "访问被拒绝：需检查入口凭据及应用权限",
-            _ => "服务返回非成功状态，请检查 NAS 服务",
-        }
-        .to_owned(),
+        message: Text::new(match status {
+            200..=399 => "workspace.probeReachable",
+            401 => "workspace.probeUnauthorized",
+            403 => "workspace.probeForbidden",
+            _ => "workspace.probeFailed",
+        }),
     })
 }
 #[tauri::command]
@@ -759,9 +727,9 @@ pub async fn refresh_session(
         .read()
         .await
         .clone()
-        .ok_or_else(|| error("请先登录 NAS"))?;
+        .ok_or_else(|| error("workspace.loginRequired"))?;
     session.refresh_entry_token().await?;
-    state.log(&app, "success", "服务访问凭据已更新");
+    state.log(&app, "success", Text::new("logs.credentialsUpdated"));
     Ok(())
 }
 #[tauri::command]
@@ -781,9 +749,9 @@ pub async fn start_proxy(
         .read()
         .await
         .clone()
-        .ok_or_else(|| error("请先测试连接并登录 NAS"))?;
+        .ok_or_else(|| error("workspace.testRequired"))?;
     if !state.proxies.lock().await.is_empty() {
-        return Err(error("请先停止代理，再修改服务映射"));
+        return Err(error("workspace.stopProxyFirst"));
     }
     validate_routes(&services, &session.info.fn_id)?;
     match session.domain_inventory().await {
@@ -795,7 +763,7 @@ pub async fn start_proxy(
         Err(_) => report_domain_warnings(
             &app,
             &state,
-            &["启动前服务域名读取失败，使用已有地址，稍后重试".to_owned()],
+            &[Text::new("logs.domainReadBeforeStartFailed")],
         ),
     }
     for other in manager.all().into_iter().filter(|c| c.id != state.id) {
@@ -805,10 +773,10 @@ pub async fn start_proxy(
                 .iter()
                 .any(|h| h.info.local_url == format!("http://127.0.0.1:{}/", route.local_port))
             {
-                return Err(error(format!(
-                    "本地端口 {} 已被另一个连接使用",
-                    route.local_port
-                )));
+                return Err(error_with(
+                    "workspace.portInUse",
+                    [("port", route.local_port.to_string())],
+                ));
             }
         }
     }
@@ -836,9 +804,9 @@ pub async fn start_proxy(
         &app,
         "success",
         if manager.allow_lan_access.load(Ordering::Relaxed) {
-            "代理已启动，监听 0.0.0.0，允许局域网访问；请求将自动附加服务凭据"
+            Text::new("logs.proxyStartedLan")
         } else {
-            "本地代理已启动，仅监听 127.0.0.1；请求将自动附加服务凭据"
+            Text::new("logs.proxyStartedLocal")
         },
     );
     Ok(ProxyStatus {
@@ -901,10 +869,10 @@ pub async fn update_services(
                 .iter()
                 .any(|h| h.info.local_url == format!("http://127.0.0.1:{}/", route.local_port))
             {
-                return Err(error(format!(
-                    "本地端口 {} 已被另一个连接使用",
-                    route.local_port
-                )));
+                return Err(error_with(
+                    "workspace.portInUse",
+                    [("port", route.local_port.to_string())],
+                ));
             }
         }
     }
@@ -912,7 +880,7 @@ pub async fn update_services(
         vec![]
     } else {
         if state.session.read().await.is_none() {
-            return Err(error("请先重新连接 NAS"));
+            return Err(error("workspace.reconnectRequired"));
         }
         proxy::start(
             &additions,
@@ -936,7 +904,7 @@ pub async fn update_services(
     let mut proxies = state.proxies.lock().await;
     proxies.extend(handles);
     let listeners = proxies.iter().map(|h| h.info.clone()).collect();
-    state.log(&app, "success", "服务映射已更新");
+    state.log(&app, "success", Text::new("logs.servicesUpdated"));
     Ok(ProxyStatus {
         running,
         listeners,
@@ -954,7 +922,7 @@ pub async fn stop_proxy(
 
     let _guard = state.operation.lock().await;
     stop_internal(&state).await;
-    state.log(&app, "info", "当前连接的本地代理监听已停止");
+    state.log(&app, "info", Text::new("logs.proxyStopped"));
     Ok(())
 }
 #[tauri::command]
@@ -989,7 +957,7 @@ pub async fn remove_connection(
     }
     *connection.credentials.lock().await = None;
     state.connections.lock().unwrap().remove(&connection_id);
-    connection.log(&app, "info", "连接已删除，本连接的代理和保存凭据已清理");
+    connection.log(&app, "info", Text::new("logs.connectionRemoved"));
     Ok(())
 }
 pub fn auto_connect(app: AppHandle, manager: Arc<AppState>) {
@@ -1009,12 +977,8 @@ pub fn auto_connect(app: AppHandle, manager: Arc<AppState>) {
                 remember: true,
             };
             if let Err(e) = establish(&app, &state, input).await {
-                state.info.write().unwrap().message = e.to_string();
-                state.log(
-                    &app,
-                    "error",
-                    "启动时自动登录失败，请检查网络或重新输入凭据",
-                );
+                state.info.write().unwrap().message = e.text();
+                state.log(&app, "error", Text::new("logs.autoConnectFailed"));
             }
         });
     }
@@ -1117,7 +1081,10 @@ mod tests {
         let mut profile = manager.connection("first").unwrap().profile();
         profile.username = "  ".to_owned();
         let result = persist_login_profile(&manager, "first".to_owned(), profile, None).await;
-        assert!(result.unwrap_err().to_string().contains("用户名"));
+        assert_eq!(
+            result.unwrap_err().text().code,
+            "workspace.usernameRequired"
+        );
         assert!(!manager.profile_path.exists());
     }
     #[tokio::test]

@@ -1,10 +1,11 @@
+use crate::text::Text;
 use crate::types::{validate_upstream, ServiceInventory, ServiceRoute};
 use std::collections::BTreeSet;
 
 pub struct DomainSync {
     pub routes: Vec<ServiceRoute>,
     pub changed: usize,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Text>,
 }
 
 // A route is identified by its NAS host port within a connection, not its domain or title.
@@ -21,9 +22,7 @@ pub fn reconcile(routes: &[ServiceRoute], inventory: &ServiceInventory, fn_id: &
             .iter()
             .any(|source| source.id == *id && source.status == "ok")
     }) {
-        result
-            .warnings
-            .push("远程注册清单不完整，保留已有域名，暂不按端口自动更新".to_owned());
+        result.warnings.push(Text::new("sync.incompleteRegistry"));
         return result;
     }
     for route in &mut result.routes {
@@ -39,17 +38,16 @@ pub fn reconcile(routes: &[ServiceRoute], inventory: &ServiceInventory, fn_id: &
             .iter()
             .any(|entry| entry.nas_port == Some(route.nas_port) && entry.status != "mapped");
         if unconfirmed || candidates.len() != 1 {
-            let reason = if unconfirmed {
-                "存在未确认的入口"
+            let code = if unconfirmed {
+                "sync.unconfirmed"
             } else if candidates.is_empty() {
-                "没有可用远程域名"
+                "sync.noDomain"
             } else {
-                "对应多个远程域名"
+                "sync.multipleDomains"
             };
-            result.warnings.push(format!(
-                "NAS 端口 {}{reason}，保留已有域名，需人工确认",
-                route.nas_port
-            ));
+            result
+                .warnings
+                .push(Text::with(code, [("port", route.nas_port.to_string())]));
             continue;
         }
         let address = candidates.into_iter().next().unwrap();

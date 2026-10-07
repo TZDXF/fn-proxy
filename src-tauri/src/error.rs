@@ -1,29 +1,46 @@
+use crate::text::Text;
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("{0}")]
-    Message(String),
-    #[error("网络请求失败，请检查网络或 FN Connect 状态")]
+    Code(Text),
+    #[error("http: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("WebSocket 连接失败，请检查 NAS 是否在线")]
+    #[error("websocket: {0}")]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
-    #[error("本地文件或监听端口操作失败：{0}")]
+    #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("NAS 返回了无法识别的数据")]
+    #[error("json: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("操作超时，请检查 NAS 网络状态")]
+    #[error("timeout: {0}")]
     Timeout(#[from] tokio::time::error::Elapsed),
+}
+impl AppError {
+    /// Locale-neutral description for the UI; the frontend translates it.
+    pub fn text(&self) -> Text {
+        match self {
+            AppError::Code(text) => text.clone(),
+            AppError::Http(_) => Text::new("error.http"),
+            AppError::WebSocket(_) => Text::new("error.webSocket"),
+            AppError::Io(error) => Text::with("error.io", [("detail", error.to_string())]),
+            AppError::Json(_) => Text::new("error.invalidData"),
+            AppError::Timeout(_) => Text::new("error.timeout"),
+        }
+    }
 }
 impl Serialize for AppError {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+        self.text().serialize(serializer)
     }
 }
 pub type Result<T> = std::result::Result<T, AppError>;
-pub fn error(message: impl Into<String>) -> AppError {
-    AppError::Message(message.into())
+pub fn error(code: &str) -> AppError {
+    AppError::Code(Text::new(code))
+}
+pub fn error_with<const N: usize>(code: &str, params: [(&str, String); N]) -> AppError {
+    AppError::Code(Text::with(code, params))
 }

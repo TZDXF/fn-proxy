@@ -1,7 +1,8 @@
 use crate::{
     docker::{ContainerCollector, ContainerMetadata, ContainerPacket, StreamLimits, StreamMatch},
-    error::{error, Result},
+    error::{error, error_with, Result},
     resolver::{browser_client, millis, BROWSER_UA},
+    text::Text,
     types::ConnectionInfo,
 };
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
@@ -40,10 +41,10 @@ impl CryptoContext {
         let mut iv = [0u8; 16];
         rand::thread_rng().fill(&mut iv);
         let public = RsaPublicKey::from_public_key_pem(public_key)
-            .map_err(|_| error("NAS RSA 公钥格式不受支持"))?;
+            .map_err(|_| error("auth.rsaPublicKeyUnsupported"))?;
         let wrapped = public
             .encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, &key)
-            .map_err(|_| error("RSA 密钥封装失败"))?;
+            .map_err(|_| error("auth.rsaWrapFailed"))?;
         Ok(Self {
             key: Zeroizing::new(key),
             iv,
@@ -53,7 +54,7 @@ impl CryptoContext {
     pub fn encrypt(&self, payload: &Value) -> Result<Value> {
         let mut plain = serde_json::to_vec(payload)?;
         let cipher = cbc::Encryptor::<aes::Aes256>::new_from_slices(&self.key, &self.iv)
-            .map_err(|_| error("AES 参数错误"))?
+            .map_err(|_| error("auth.aesParams"))?
             .encrypt_padded_vec_mut::<Pkcs7>(&plain);
         plain.zeroize();
         Ok(
@@ -63,17 +64,17 @@ impl CryptoContext {
     pub fn decrypt_secret(&self, value: &str) -> Result<Zeroizing<Vec<u8>>> {
         let ciphertext = B64
             .decode(value)
-            .map_err(|_| error("会话 Secret 编码无效"))?;
+            .map_err(|_| error("auth.secretEncoding"))?;
         let plain = cbc::Decryptor::<aes::Aes256>::new_from_slices(&self.key, &self.iv)
-            .map_err(|_| error("AES 参数错误"))?
+            .map_err(|_| error("auth.aesParams"))?
             .decrypt_padded_vec_mut::<Pkcs7>(&ciphertext)
-            .map_err(|_| error("会话 Secret 解密失败"))?;
+            .map_err(|_| error("auth.secretDecrypt"))?;
         Ok(Zeroizing::new(plain))
     }
 }
 pub fn signed_message(payload: &Value, secret: &[u8]) -> Result<String> {
     let text = serde_json::to_string(payload)?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| error("会话签名失败"))?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| error("auth.signFailed"))?;
     mac.update(text.as_bytes());
     Ok(format!(
         "{}{}",
@@ -92,13 +93,13 @@ impl RpcClient {
     pub async fn open(base: &url::Url, jar: &Jar) -> Result<Self> {
         let mut url = base
             .join("/websocket?type=main")
-            .map_err(|_| error("WebSocket 地址无效"))?;
+            .map_err(|_| error("auth.wsUrlInvalid"))?;
         url.set_scheme(if base.scheme() == "https" {
             "wss"
         } else {
             "ws"
         })
-        .map_err(|_| error("WebSocket 协议无效"))?;
+        .map_err(|_| error("auth.wsSchemeInvalid"))?;
         let mut request = url.as_str().into_client_request()?;
         request
             .headers_mut()
@@ -136,20 +137,21 @@ impl RpcClient {
                                 .as_i64()
                                 .or_else(|| value["code"].as_i64())
                                 .unwrap_or(-1);
-                            return Err(error(format!(
-                                "NAS 拒绝请求（错误码 {code}），请检查账号、密码或权限"
-                            )));
+                            return Err(error_with(
+                                "auth.nasRejected",
+                                [("code", code.to_string())],
+                            ));
                         }
                         return Ok(value);
                     }
                     Message::Ping(bytes) => {
                         self.socket.send(Message::Pong(bytes)).await?;
                     }
-                    Message::Close(_) => return Err(error("NAS 已关闭认证连接")),
+                    Message::Close(_) => return Err(error("auth.authClosed")),
                     _ => {}
                 }
             }
-            Err(error("NAS 认证连接已断开"))
+            Err(error("auth.authDisconnected"))
         })
         .await?
     }
@@ -169,7 +171,7 @@ impl RpcClient {
                 &self
                     .crypto
                     .as_ref()
-                    .ok_or_else(|| error("加密握手尚未完成"))?
+                    .ok_or_else(|| error("auth.handshakeIncomplete"))?
                     .encrypt(&arguments)?,
             )?
         } else if self.secret.is_empty() {
@@ -201,34 +203,34 @@ impl RpcClient {
             loop {
                 let message = tokio::time::timeout(limits.idle, self.socket.next())
                     .await
-                    .map_err(|_| error("容器清单等待分段或成功终态超时；未返回残缺结果"))?
-                    .ok_or_else(|| error("容器列表未完成前认证连接断开"))??;
+                    .map_err(|_| error("containers.idleTimeout"))?
+                    .ok_or_else(|| error("containers.disconnected"))??;
                 match message {
                     Message::Text(text) => {
                         packets += 1;
                         if packets > limits.packets || text.len() > limits.frame_bytes {
-                            return Err(error("容器清单响应超过安全上限；未截断后冒充完整结果"));
+                            return Err(error("containers.overflow"));
                         }
                         // First parse only reqid; unrelated packets need not match the container schema.
                         let header: StreamMatch = serde_json::from_str(&text)
-                            .map_err(|_| error("容器清单收到无效 JSON"))?;
+                            .map_err(|_| error("containers.invalidJson"))?;
                         if header.reqid.as_ref().and_then(Value::as_str) != Some(id.as_str()) {
                             continue;
                         }
                         let packet: ContainerPacket = serde_json::from_str(&text)
-                            .map_err(|_| error("容器列表返回结构变化，未把未知格式当作空清单"))?;
+                            .map_err(|_| error("containers.schemaChanged"))?;
                         if collector.push(packet)? {
                             return collector.finish();
                         }
                     }
                     Message::Ping(bytes) => self.socket.send(Message::Pong(bytes)).await?,
-                    Message::Close(_) => return Err(error("容器列表未完成前 NAS 关闭认证连接")),
+                    Message::Close(_) => return Err(error("containers.closedEarly")),
                     _ => {}
                 }
             }
         })
         .await
-        .map_err(|_| error("容器清单总等待时间超限；未返回分段残留"))?
+        .map_err(|_| error("containers.totalTimeout"))?
     }
     pub async fn heartbeat(&mut self) -> Result<()> {
         self.socket
@@ -246,11 +248,11 @@ impl RpcClient {
                         }
                     }
                     Message::Ping(b) => self.socket.send(Message::Pong(b)).await?,
-                    Message::Close(_) => return Err(error("NAS 已关闭连接")),
+                    Message::Close(_) => return Err(error("auth.authClosed")),
                     _ => {}
                 }
             }
-            Err(error("NAS 认证连接已断开"))
+            Err(error("auth.authDisconnected"))
         })
         .await?
     }
@@ -288,18 +290,18 @@ impl NasSession {
             .send()
             .await?;
         if !boot.status().is_success() {
-            return Err(error("FN Connect 入口握手失败，尚未尝试账号密码登录"));
+            return Err(error("auth.entryHandshakeFailed"));
         }
         let mut rpc = RpcClient::open(&base, &jar).await?;
         let key = rpc.call("util.crypto.getRSAPub", json!({}), false).await?;
         rpc.si = key["si"]
             .as_str()
-            .ok_or_else(|| error("NAS 未返回会话标识 si"))?
+            .ok_or_else(|| error("auth.sessionIdMissing"))?
             .to_owned();
         rpc.crypto = Some(CryptoContext::new(
             key["pub"]
                 .as_str()
-                .ok_or_else(|| error("NAS 未返回 RSA 公钥"))?,
+                .ok_or_else(|| error("auth.rsaKeyMissing"))?,
         )?);
         let did = format!(
             "fn-proxy-{}",
@@ -311,14 +313,14 @@ impl NasSession {
         if logged["isTwofaEnforced"].as_bool() == Some(true)
             && logged["isBindTwofaSecret"].as_bool() != Some(true)
         {
-            return Err(error("该账号要求先在 NAS 网页完成二次验证绑定"));
+            return Err(error("auth.tfaBindingRequired"));
         }
         if logged["isBindTwofaSecret"].as_bool() == Some(true)
             && logged["isTrustedDevice"].as_bool() != Some(true)
         {
             let code = otp
                 .filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit()))
-                .ok_or_else(|| error("TFA_REQUIRED：请输入六位二次验证码，再测试连接"))?;
+                .ok_or_else(|| error("auth.tfaRequired"))?;
             logged=rpc.call("user.2fa.loginVerify",json!({"code":code,"isTrustedDevice":false,"accessToken":logged["accessToken"],"stay":u8::from(remember),"deviceType":"Browser","deviceName":"Windows-FNProxy","did":did,"ver":2}),true).await?;
         }
         let auth_mode = if let Some(ticket) = logged["ticket"].as_str().filter(|t| !t.is_empty()) {
@@ -328,18 +330,18 @@ impl NasSession {
                 .send()
                 .await?;
             if !response.status().is_success() {
-                return Err(error("NAS 登录成功，但 Ticket 到 Cookie 的交换失败"));
+                return Err(error("auth.ticketExchangeFailed"));
             }
             "ticket-cookie"
         } else if let Some(token) = logged["token"].as_str().filter(|t| !t.is_empty()) {
             jar.add_cookie_str(&format!("fnos-token={token}; Path=/; Secure"), &base);
             "legacy"
         } else {
-            return Err(error("NAS 登录未返回可用的会话，请检查认证版本"));
+            return Err(error("auth.noSession"));
         };
         let secret = logged["secret"]
             .as_str()
-            .ok_or_else(|| error("NAS 未返回后续 RPC 需要的 Secret"))?;
+            .ok_or_else(|| error("auth.secretMissing"))?;
         rpc.secret = rpc.crypto.as_ref().unwrap().decrypt_secret(secret)?;
         for field in ["token", "longToken", "secret", "ticket", "accessToken"] {
             if let Some(Value::String(value)) = logged.get_mut(field) {
@@ -356,13 +358,13 @@ impl NasSession {
         let entry_token = entry["data"]["token"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| error("NAS 未签发 entry-token；请确认账号具有应用访问权限"))?
+            .ok_or_else(|| error("auth.entryTokenMissing"))?
             .to_owned();
         if entry_token
             .bytes()
             .any(|b| b == b';' || b == b'\r' || b == b'\n')
         {
-            return Err(error("NAS 返回了无效的服务访问凭据"));
+            return Err(error("auth.credentialInvalid"));
         }
         let info = ConnectionInfo {
             connected: true,
@@ -370,7 +372,7 @@ impl NasSession {
             username: username.to_owned(),
             relay: base.origin().ascii_serialization(),
             auth_mode: auth_mode.to_owned(),
-            message: "NAS 已登录，服务访问凭据已就绪".to_owned(),
+            message: Text::new("auth.loggedIn"),
         };
         Ok(Arc::new(Self {
             rpc: Mutex::new(rpc),
@@ -436,9 +438,9 @@ impl NasSession {
         let token = result["data"]["token"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| error("entry-token 更新失败"))?;
+            .ok_or_else(|| error("auth.entryTokenRefreshFailed"))?;
         if token.contains([';', '\r', '\n']) {
-            return Err(error("无效服务访问凭据"));
+            return Err(error("auth.credentialRefreshInvalid"));
         }
         *self.entry_token.write().await = Zeroizing::new(token.to_owned());
         Ok(())

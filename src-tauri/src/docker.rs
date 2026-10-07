@@ -1,5 +1,6 @@
 use crate::{
     error::{error, Result},
+    text::Text,
     types::{DockerPortInventory, DockerPortRow, InventorySource, ServiceInventory},
 };
 use serde::{Deserialize, Deserializer};
@@ -106,22 +107,22 @@ impl ContainerCollector {
     /// Only a successful terminal packet yields an inventory; partial results stay private.
     pub fn push(&mut self, packet: ContainerPacket) -> Result<bool> {
         if self.finished {
-            return Err(error("容器清单已经完成，拒绝混入后续响应"));
+            return Err(error("containers.alreadyFinished"));
         }
         if packet.errno.is_some_and(|code| code != 0)
             || matches!(packet.result.as_deref(), Some("fail" | "cancel"))
         {
-            return Err(error("NAS 拒绝或取消容器端口盘点，请检查 Docker 权限"));
+            return Err(error("containers.denied"));
         }
         let finished = matches!(packet.result.as_deref(), Some("suc" | "succ"));
         if !finished && !matches!(packet.result.as_deref(), Some("doing") | None) {
-            return Err(error("容器列表返回未知状态，未将分段数据当作完整清单"));
+            return Err(error("containers.unknownState"));
         }
         for mut item in packet.rsp.unwrap_or_default() {
             self.records += 1;
             self.bindings += item.ports.len();
             if self.records > self.limits.records || self.bindings > self.limits.bindings {
-                return Err(error("容器清单超过本工具安全上限；未截断后冒充完整清单"));
+                return Err(error("containers.overLimit"));
             }
             if item.id.is_empty()
                 || item.id.len() > 256
@@ -132,7 +133,7 @@ impl ContainerCollector {
                     port.protocol.len() > 16 || port.ip.as_ref().is_some_and(|ip| ip.len() > 128)
                 })
             {
-                return Err(error("容器清单包含不受支持的标识或元数据，未生成猜测映射"));
+                return Err(error("containers.unsupportedMetadata"));
             }
             let mut unique_ports = HashSet::new();
             for port in &mut item.ports {
@@ -162,7 +163,7 @@ impl ContainerCollector {
     }
     pub fn finish(self) -> Result<Vec<ContainerMetadata>> {
         if !self.finished {
-            return Err(error("容器清单缺少成功终态，不能返回分段残留"));
+            return Err(error("containers.missingSuccess"));
         }
         Ok(self.items)
     }
@@ -177,11 +178,10 @@ pub fn attach_container_ports(
         Err(_) => {
             report.sources.push(InventorySource {
                 id: "containers".to_owned(),
-                name: "Docker 容器端口盘点".to_owned(),
+                name: Text::new("containers.sourceName"),
                 status: "unavailable".to_owned(),
                 count: None,
-                message: "盘点失败或未收到成功终态；不展示分段残留，也不把未知计为零端口"
-                    .to_owned(),
+                message: Text::new("containers.unavailable"),
             });
             return;
         }
@@ -233,35 +233,23 @@ pub fn attach_container_ports(
                 }
             }
             let (status, reason) = if port.public_port.is_none() {
-                (
-                    "not-published",
-                    "未提供有效宿主机端口；容器内暴露端口不能直接作为远程代理目标",
-                )
+                ("not-published", Text::new("containers.noHostPort"))
             } else if protocol != "tcp" {
                 (
                     "unsupported-protocol",
-                    "仅展示此发布记录；本工具不转发 UDP 或未知协议",
+                    Text::new("containers.unsupportedProtocol"),
                 )
             } else if !registry_available {
                 (
                     "registry-unavailable",
-                    "Docker 远程映射来源未读取，不能判断是否已经分配域名",
+                    Text::new("containers.registryUnavailable"),
                 )
             } else if ambiguous_prefix || candidates.len() > 1 {
-                (
-                    "ambiguous",
-                    "容器前缀存在歧义或匹配多个远程域名，不自动任选",
-                )
+                ("ambiguous", Text::new("containers.ambiguous"))
             } else if candidates.is_empty() {
-                (
-                    "no-domain",
-                    "没有匹配到此容器及宿主机端口的有效远程域名；不按全局端口号猜测",
-                )
+                ("no-domain", Text::new("containers.noDomain"))
             } else {
-                (
-                    "mapped",
-                    "容器 ID 前缀与宿主机端口均匹配；已注册不代表服务或 HTTP API 实际可达",
-                )
+                ("mapped", Text::new("containers.mapped"))
             };
             let pair = if status == "mapped" {
                 candidates.pop()
@@ -280,28 +268,36 @@ pub fn attach_container_ports(
                 upstream: pair.as_ref().map(|pair| pair.0.clone()),
                 fn_domain: pair.map(|pair| pair.1),
                 status: status.to_owned(),
-                reason: reason.to_owned(),
+                reason,
             });
         }
     }
     let published_ports = rows.iter().filter(|row| row.nas_port.is_some()).count();
     report.sources.push(InventorySource {
         id: "containers".to_owned(),
-        name: "Docker 容器端口盘点".to_owned(),
+        name: Text::new("containers.sourceName"),
         status: "ok".to_owned(),
         count: Some(items.len()),
-        message: format!(
-            "成功终态后汇总 {} 个容器、{published_ports} 条发布记录；仅保留名称、状态与端口元数据",
-            items.len()
+        message: Text::with(
+            "containers.summary",
+            [
+                ("containers", items.len().to_string()),
+                ("publishedPorts", published_ports.to_string()),
+            ],
         ),
     });
     report.docker = Some(DockerPortInventory {
-        containers: items.len(), published_ports, registry_available,
+        containers: items.len(),
+        published_ports,
+        registry_available,
         mapped_ports: rows.iter().filter(|row| row.status == "mapped").count(),
         unmapped_ports: rows.iter().filter(|row| row.status == "no-domain").count(),
-        unconfirmed_ports: rows.iter().filter(|row| matches!(row.status.as_str(), "registry-unavailable" | "ambiguous")).count(),
+        unconfirmed_ports: rows
+            .iter()
+            .filter(|row| matches!(row.status.as_str(), "registry-unavailable" | "ambiguous"))
+            .count(),
         rows,
-        scope: "当前账号 containerList 返回的容器端口元数据；包含 TCP/UDP 发布记录及仅暴露端口，不枚举 host 网络模式或 NAS 非 Docker 监听端口".to_owned(),
+        scope: Text::new("containers.scope"),
     });
 }
 

@@ -1,4 +1,5 @@
 use crate::error::{error, Result};
+use crate::text::Text;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -47,13 +48,13 @@ pub struct DiscoveredService {
     pub nas_port: u16,
     pub upstream: String,
     pub fn_domain: String,
-    pub source: String,
+    pub source: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InventoryEntry {
     pub id: String,
-    pub source: String,
+    pub source: Text,
     pub app_id: Option<String>,
     pub name: String,
     pub nas_port: Option<u16>,
@@ -61,16 +62,16 @@ pub struct InventoryEntry {
     pub upstream: Option<String>,
     pub path: Option<String>,
     pub status: String,
-    pub reason: String,
+    pub reason: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InventorySource {
     pub id: String,
-    pub name: String,
+    pub name: Text,
     pub status: String,
     pub count: Option<usize>,
-    pub message: String,
+    pub message: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +87,7 @@ pub struct DockerPortRow {
     pub upstream: Option<String>,
     pub fn_domain: Option<String>,
     pub status: String,
-    pub reason: String,
+    pub reason: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,7 +99,7 @@ pub struct DockerPortInventory {
     pub unconfirmed_ports: usize,
     pub registry_available: bool,
     pub rows: Vec<DockerPortRow>,
-    pub scope: String,
+    pub scope: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,7 +111,7 @@ pub struct ServiceInventory {
     pub unmapped_entries: usize,
     pub services: Vec<DiscoveredService>,
     pub entries: Vec<InventoryEntry>,
-    pub scope: String,
+    pub scope: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,7 +143,7 @@ pub struct ConnectionInfo {
     pub username: String,
     pub relay: String,
     pub auth_mode: String,
-    pub message: String,
+    pub message: Text,
 }
 #[derive(Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -177,26 +178,27 @@ pub struct ConnectionSnapshot {
 pub struct RouteProbe {
     pub status: u16,
     pub reachable: bool,
-    pub message: String,
+    pub message: Text,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     pub time: u64,
     pub level: String,
-    pub message: String,
+    pub label: String,
+    pub message: Text,
 }
 
 pub fn normalize_fnid(input: &str) -> Result<String> {
     let id = input.trim().to_ascii_lowercase();
     let re = regex::Regex::new(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$").unwrap();
     if !re.is_match(&id) || id.contains("--") {
-        return Err(error("FN ID 只能包含字母、数字和单个连字符"));
+        return Err(error("route.fnIdInvalid"));
     }
     Ok(id)
 }
 pub fn validate_upstream(input: &str, fn_id: &str) -> Result<url::Url> {
-    let url = url::Url::parse(input.trim()).map_err(|_| error("请输入完整的 HTTPS 服务地址"))?;
+    let url = url::Url::parse(input.trim()).map_err(|_| error("route.httpsRequired"))?;
     let suffix = format!(".{fn_id}.fnos.net");
     let host = url.host_str().unwrap_or_default();
     if url.scheme() != "https"
@@ -207,7 +209,7 @@ pub fn validate_upstream(input: &str, fn_id: &str) -> Result<url::Url> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(error("服务地址必须属于当前 NAS 的 FN Connect 子域名，使用 HTTPS，且不能包含凭据、查询参数或片段"));
+        return Err(error("route.upstreamInvalid"));
     }
     if !host[..host.len() - suffix.len()].split('.').all(|label| {
         !label.is_empty()
@@ -215,24 +217,24 @@ pub fn validate_upstream(input: &str, fn_id: &str) -> Result<url::Url> {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     }) {
-        return Err(error("服务子域名格式无效"));
+        return Err(error("route.subdomainInvalid"));
     }
     if url.path() != "/" && !url.path().is_empty() {
-        return Err(error("请填写服务域名根地址；API 路径在访问本地代理时追加"));
+        return Err(error("route.rootAddressRequired"));
     }
     Ok(url)
 }
 pub fn validate_routes(routes: &[ServiceRoute], fn_id: &str) -> Result<()> {
     let mut ports = std::collections::HashSet::new();
     if routes.len() > 32 {
-        return Err(error("最多配置 32 个服务"));
+        return Err(error("route.tooManyServices"));
     }
     for route in routes.iter().filter(|s| s.enabled) {
         if route.local_port == 0 || route.nas_port == 0 {
-            return Err(error("端口需为 1–65535，不能为 0"));
+            return Err(error("route.portInvalid"));
         }
         if !ports.insert(route.local_port) {
-            return Err(error("多个服务不能使用相同本地端口"));
+            return Err(error("route.duplicateLocalPort"));
         }
         validate_upstream(&route.upstream, fn_id)?;
     }

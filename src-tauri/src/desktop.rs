@@ -1,11 +1,37 @@
+use serde::Deserialize;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    App, AppHandle, Manager, Window, WindowEvent,
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    App, AppHandle, Manager, State, Window, WindowEvent,
 };
 
 const TRAY_ID: &str = "main-tray";
 const MAIN_WINDOW: &str = "main";
+
+/// Tray labels arrive from the frontend so menu text follows the UI locale
+/// and every translation stays in `src/locales/*.json`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayLabels {
+    show: String,
+    quit: String,
+    tooltip: String,
+}
+
+pub struct TrayHandles {
+    show: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+    tray: TrayIcon<tauri::Wry>,
+}
+
+#[tauri::command]
+pub fn set_tray_labels(handles: State<'_, TrayHandles>, labels: TrayLabels) {
+    // A rejected label update must never break the app; the tray just keeps
+    // its previous language until the next successful sync.
+    let _ = handles.show.set_text(labels.show);
+    let _ = handles.quit.set_text(labels.quit);
+    let _ = handles.tray.set_tooltip(Some(labels.tooltip));
+}
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -20,18 +46,18 @@ fn show_main_window(app: &AppHandle) {
 }
 
 pub fn setup(app: &App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show-main", "打开主窗口", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show-main", "FN Proxy", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 FN Proxy", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &separator, &quit])?;
     let icon = app
         .default_window_icon()
         .expect("FN Proxy must have an application icon")
         .clone();
 
-    TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .tooltip("FN Proxy · 关闭窗口后继续后台运行")
+        .tooltip("FN Proxy")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -53,6 +79,7 @@ pub fn setup(app: &App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    app.manage(TrayHandles { show, quit, tray });
     Ok(())
 }
 

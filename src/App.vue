@@ -20,6 +20,7 @@ import {
   type ServiceRoute,
 } from "./lib/types";
 import { useWorkspace } from "./lib/workspace";
+import { localize } from "./lib/text";
 
 const { t, locale } = useI18n({ useScope: "global" });
 const desktop = isTauri();
@@ -588,7 +589,7 @@ async function confirmDelete() {
                     error: t("logs.error"),
                   }[entry.level]
                 }}</span
-                ><span>{{ entry.message }}</span>
+                ><span>{{ `[${entry.label}] ` }}{{ localize(entry.message) }}</span>
               </div>
             </div>
           </section></TabsContent
@@ -777,8 +778,8 @@ async function confirmDelete() {
               v-for="source in inventory.sources"
               :key="source.id"
               :class="['badge', source.status === 'ok' ? 'success' : 'error']"
-              :title="source.message"
-              >{{ source.name }} ·
+              :title="localize(source.message)"
+              >{{ localize(source.name) }} ·
               {{ source.status === "ok" ? (source.count ?? 0) : t("common.unavailable") }}</span
             >
           </div>
