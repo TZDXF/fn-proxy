@@ -27,6 +27,26 @@ npm run desktop:build
 # src-tauri/target/release/bundle/nsis/
 ```
 
+## 应用图标
+
+图标采用翡翠绿圆角底板与白色 / 薄荷绿双向中继路径，表达 NAS 与本机之间的代理转发。
+`public/app-icon.svg` 是唯一设计源文件，侧栏品牌标志与浏览器标签页直接使用它。
+
+修改 SVG 后，执行以下命令重新生成 `src-tauri/icons/` 中的桌面及移动端图标：
+
+```powershell
+npm run icons:generate
+```
+
+桌面窗口、任务栏和安装包使用生成的 PNG / ICO 图标。**只重启旧 EXE 不会更新图标或内嵌界面**；修改图标后，先退出正在运行的应用，再重新构建：
+
+```powershell
+npm run desktop:build:debug
+# 构建完成后启动 src-tauri/target/debug/fn-proxy.exe
+```
+
+此命令生成包含新图标与界面资源的独立调试版 EXE，不需要 Vite 常驻。正式安装包仍使用 `npm run desktop:build` 构建。
+
 ## 本次实现的验证状态
 
 - 前端：Oxlint、Vue/TypeScript 类型检查、12 项单元测试、Oxfmt 和 Vite 生产构建通过。

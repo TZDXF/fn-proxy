@@ -96,14 +96,10 @@ code {
   color: var(--accent);
 }
 .brand-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  flex-shrink: 0;
   width: 37px;
   height: 37px;
-  border-radius: 11px;
-  background: var(--accent);
-  color: white;
 }
 .navigation {
   display: flex;

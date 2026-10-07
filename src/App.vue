@@ -158,7 +158,7 @@ async function confirmDelete() {
   <TabsRoot v-model="section" orientation="vertical" class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark"><Icon name="link" :size="25" /></div>
+        <img class="brand-mark" src="/app-icon.svg" alt="" width="37" height="37" />
         <strong>FN Proxy<span>.</span></strong>
       </div>
       <TabsList class="navigation" aria-label="主导航">

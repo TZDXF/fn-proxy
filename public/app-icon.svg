@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="120" fill="#148466"/><path d="M128 370V140h260M128 258h188M316 258v112" stroke="#fff" stroke-width="55" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="393" cy="370" r="36" fill="#fff"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>FN Proxy · 双向中继</title>
+  <defs>
+    <linearGradient id="tile" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B9876" />
+      <stop offset="1" stop-color="#0D6956" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#tile)" />
+  <rect x="16" y="16" width="480" height="480" rx="106" stroke="#FFFFFF" stroke-opacity=".12" stroke-width="2" />
+  <g stroke-width="36" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M144 304V208C144 188 160 172 180 172H352M316 136L352 172L316 208" stroke="#FFFFFF" />
+    <path d="M368 208V304C368 324 352 340 332 340H160M196 304L160 340L196 376" stroke="#A7F3D0" />
+  </g>
+</svg>
