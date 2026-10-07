@@ -1,8 +1,9 @@
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  dockerPortService,
   normalizeFnId,
   validateService,
   suggestedLocalPort,
@@ -13,6 +14,7 @@ import {
   type ProxyStatus,
   type DiscoveredService,
   type ServiceInventory,
+  type DockerPortRow,
   type ServiceRoute,
   type LogEntry,
   type RouteProbe,
@@ -20,53 +22,161 @@ import {
 
 export function useWorkspace() {
   const desktop = isTauri();
-  const profile = reactive<Profile>({
-    fnId: "",
-    username: "",
-    remember: false,
-    autoConnect: false,
-    services: [],
+  function createConnection(profile?: Profile, hasSavedPassword = false, saved = false) {
+    const config: Profile = profile ?? {
+      id: crypto.randomUUID(),
+      fnId: "",
+      username: "",
+      remember: false,
+      autoConnect: false,
+      services: [],
+    };
+    return {
+      profile: config,
+      saved,
+      password: "",
+      otp: "",
+      showPassword: false,
+      savedIdentity: hasSavedPassword
+        ? `${config.fnId.trim().toLowerCase()}\n${config.username.trim()}`
+        : "",
+      inventory: null as ServiceInventory | null,
+      probes: {} as Record<string, RouteProbe>,
+      connection: {
+        connected: false,
+        fnId: "",
+        username: "",
+        relay: "",
+        authMode: "",
+        message: "尚未连接 NAS",
+      } as ConnectionInfo,
+      proxy: { running: false, listeners: [], requests: 0 } as ProxyStatus,
+    };
+  }
+  const connections = reactive([createConnection()]);
+  const selectedConnectionId = ref(connections[0]!.profile.id);
+  const current = computed(() =>
+    connections.find((c) => c.profile.id === selectedConnectionId.value)!,
+  );
+  const profile = computed(() => current.value.profile);
+  const password = computed({
+    get: () => current.value.password,
+    set: (value: string) => {
+      current.value.password = value;
+    },
   });
-  const password = ref("");
-  const otp = ref("");
-  const showPassword = ref(false);
-  const savedIdentity = ref("");
+  const otp = computed({
+    get: () => current.value.otp,
+    set: (value: string) => {
+      current.value.otp = value;
+    },
+  });
+  const showPassword = computed({
+    get: () => current.value.showPassword,
+    set: (value: boolean) => {
+      current.value.showPassword = value;
+    },
+  });
+  const savedIdentity = computed({
+    get: () => current.value.savedIdentity,
+    set: (value: string) => {
+      current.value.savedIdentity = value;
+    },
+  });
   const hasSavedPassword = computed(
     () =>
-      savedIdentity.value === `${profile.fnId.trim().toLowerCase()}\n${profile.username.trim()}`,
+      savedIdentity.value ===
+      `${profile.value.fnId.trim().toLowerCase()}\n${profile.value.username.trim()}`,
   );
-  const section = ref<"overview" | "services" | "protocol" | "logs">("overview");
+  const section = ref<"overview" | "connections" | "services" | "logs">("overview");
+  const savedConnections = computed(() => connections.filter((c) => c.saved));
   const busy = ref("");
   const notice = ref<{ message: string; error: boolean } | null>(null);
-  const inventory = ref<ServiceInventory | null>(null);
+  const inventory = computed({
+    get: () => current.value.inventory,
+    set: (value: ServiceInventory | null) => {
+      current.value.inventory = value;
+    },
+  });
   const discovered = computed(() => inventory.value?.services ?? []);
   const logs = ref<LogEntry[]>([]);
-  const connection = ref<ConnectionInfo>({
-    connected: false,
-    fnId: "",
-    username: "",
-    relay: "",
-    authMode: "",
-    message: "尚未连接 NAS",
+  const connection = computed({
+    get: () => current.value.connection,
+    set: (value: ConnectionInfo) => {
+      current.value.connection = value;
+    },
   });
-  const proxy = ref<ProxyStatus>({ running: false, listeners: [], requests: 0 });
-  const probes = reactive<Record<string, RouteProbe>>({});
+  const proxy = computed({
+    get: () => current.value.proxy,
+    set: (value: ProxyStatus) => {
+      current.value.proxy = value;
+    },
+  });
+  const probes = computed(() => current.value.probes);
   const editor = reactive<ServiceRoute>({
     id: "",
     name: "",
     nasPort: 8084,
-    localPort: 18084,
+    localPort: 8084,
     upstream: "",
     enabled: true,
   });
   const editing = ref(false);
-  const enabledServices = computed(() => profile.services.filter((s) => s.enabled));
+  const enabledServices = computed(() => profile.value.services.filter((s) => s.enabled));
   const formMatchesSession = computed(
     () =>
       connection.value.connected &&
-      profile.fnId.trim().toLowerCase() === connection.value.fnId &&
-      profile.username.trim() === connection.value.username,
+      profile.value.fnId.trim().toLowerCase() === connection.value.fnId &&
+      profile.value.username.trim() === connection.value.username,
   );
+  function occupiedPorts(excludeId = ""): number[] {
+    return connections.flatMap((c) =>
+      c.profile.services
+        .filter((s) => c.profile.id !== selectedConnectionId.value || s.id !== excludeId)
+        .map((s) => s.localPort),
+    );
+  }
+  let suggestedEditorPort = editor.localPort;
+  watch(
+    () => editor.nasPort,
+    (port) => {
+      if (!editing.value || editor.id || editor.localPort !== suggestedEditorPort) return;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+      suggestedEditorPort = suggestedLocalPort(port, occupiedPorts());
+      editor.localPort = suggestedEditorPort;
+    },
+  );
+  watch(selectedConnectionId, () => {
+    editing.value = false;
+  });
+  function addConnection() {
+    if (busy.value) return;
+    const target = createConnection();
+    connections.push(target);
+    selectedConnectionId.value = target.profile.id;
+    section.value = "connections";
+  }
+  async function removeConnection(silent = false) {
+    if (busy.value) return;
+    const id = selectedConnectionId.value;
+    const removeLocal = () => {
+      const index = connections.findIndex((c) => c.profile.id === id);
+      connections[index]!.password = "";
+      connections[index]!.otp = "";
+      connections.splice(index, 1);
+      if (!connections.length) connections.push(createConnection());
+      selectedConnectionId.value = (connections.find((c) => c.saved) ?? connections[0]!).profile.id;
+      if (!silent) notify("连接已删除");
+    };
+    if (!desktop) {
+      removeLocal();
+      return;
+    }
+    await run("删除连接", async () => {
+      await invoke("remove_connection", { connectionId: id });
+      removeLocal();
+    });
+  }
   let timer: ReturnType<typeof setInterval> | undefined;
   let unlisten: UnlistenFn | undefined;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -88,7 +198,7 @@ export function useWorkspace() {
       return await action();
     } catch (error) {
       notify(String(error instanceof Error ? error.message : error), true);
-      return;
+      return undefined;
     } finally {
       busy.value = "";
     }
@@ -96,92 +206,97 @@ export function useWorkspace() {
   async function refresh() {
     if (!desktop) return;
     const snapshot = await invoke<AppSnapshot>("get_snapshot");
-    connection.value = snapshot.connection;
-    proxy.value = snapshot.proxy;
+    for (const item of snapshot.connections) {
+      const target = connections.find((c) => c.profile.id === item.id);
+      if (target) {
+        target.connection = item.connection;
+        target.proxy = item.proxy;
+      }
+    }
   }
   async function connect() {
-    await run("正在登录", async () => {
-      profile.fnId = normalizeFnId(profile.fnId);
-      if (!profile.username.trim()) throw new Error("请输入 NAS 用户名");
+    return await run("正在登录", async () => {
+      profile.value.fnId = normalizeFnId(profile.value.fnId);
+      profile.value.username = profile.value.username.trim();
+      if (!profile.value.username) throw new Error("请输入 NAS 用户名");
       if (!password.value && !hasSavedPassword.value) throw new Error("请输入 NAS 密码");
       inventory.value = null;
       connection.value = await invoke<ConnectionInfo>("connect_nas", {
+        connectionId: selectedConnectionId.value,
         input: {
-          fnId: profile.fnId,
-          username: profile.username.trim(),
+          fnId: profile.value.fnId,
+          username: profile.value.username.trim(),
           password: password.value || null,
           otp: otp.value || null,
-          remember: profile.remember,
+          remember: profile.value.remember,
         },
       });
       password.value = "";
       otp.value = "";
-      notify("自动登录成功。下一步读取服务映射，或手动添加服务。");
+      notify("连接成功");
       await refresh();
+      return true;
     });
   }
   async function save() {
-    await run("正在保存", async () => {
+    return await run("正在保存", async () => {
       if (!formMatchesSession.value) throw new Error("请先使用当前 FN ID 和账号测试连接成功");
       await invoke("save_login", {
-        profile: { ...profile, services: profile.services.map((s) => ({ ...s })) },
+        connectionId: selectedConnectionId.value,
+        profile: { ...profile.value, services: profile.value.services.map((s) => ({ ...s })) },
       });
-      savedIdentity.value = profile.remember
-        ? `${profile.fnId.trim().toLowerCase()}\n${profile.username.trim()}`
+      savedIdentity.value = profile.value.remember
+        ? `${profile.value.fnId.trim().toLowerCase()}\n${profile.value.username.trim()}`
         : "";
-      notify(
-        profile.remember
-          ? "登录已保存，密码存放在 Windows 凭据管理器中。"
-          : "配置已保存，不持久化密码。",
-      );
+      current.value.saved = true;
+      notify("连接已保存");
+      return true;
     });
   }
   async function forget() {
     await run("删除已保存凭据", async () => {
-      await invoke("forget_login");
+      await invoke("forget_login", { connectionId: selectedConnectionId.value });
       savedIdentity.value = "";
-      profile.remember = false;
-      profile.autoConnect = false;
-      notify("已删除已保存密码，当前连接不会因此立即撤销。");
+      profile.value.remember = false;
+      profile.value.autoConnect = false;
+      notify("当前连接不再保存密码，其他连接和当前会话不受影响。");
     });
   }
   async function disconnect() {
     await run("正在断开", async () => {
-      await invoke("disconnect_nas");
+      await invoke("disconnect_nas", { connectionId: selectedConnectionId.value });
       inventory.value = null;
       await refresh();
       notify("连接和本地代理已停止。");
     });
   }
   async function discover() {
-    await run("读取完整入口清单", async () => {
+    await run("读取入口与容器发布端口", async () => {
       inventory.value = null;
-      inventory.value = await invoke<ServiceInventory>("get_service_inventory");
-      notify(
-        `当前账号可见 ${inventory.value.totalEntries} 个入口，${discovered.value.length} 个独立端口服务，${inventory.value.unmappedEntries} 个入口无法建立端口映射。`,
-      );
+      inventory.value = await invoke<ServiceInventory>("get_service_inventory", {
+        connectionId: selectedConnectionId.value,
+      });
+      notify(`已读取 ${discovered.value.length} 个服务`);
       section.value = "services";
     });
   }
-  function addDiscovered(service: DiscoveredService) {
+  async function addDiscovered(service: DiscoveredService) {
+    if (profile.value.services.some((s) => s.upstream === service.upstream)) {
+      notify("此服务已添加", true);
+      return;
+    }
+    showEditor();
+    Object.assign(editor, {
+      name: service.name,
+      nasPort: service.nasPort,
+      localPort: suggestedLocalPort(service.nasPort, occupiedPorts()),
+      upstream: service.upstream,
+    });
+    await commitEditor();
+  }
+  async function addDockerPort(row: DockerPortRow) {
     try {
-      if (proxy.value.running) throw new Error("请先停止代理再修改映射");
-      if (profile.services.some((s) => s.upstream === service.upstream))
-        throw new Error("此服务已添加");
-      const route: ServiceRoute = {
-        id: crypto.randomUUID(),
-        name: service.name,
-        nasPort: service.nasPort,
-        localPort: suggestedLocalPort(
-          service.nasPort,
-          profile.services.map((s) => s.localPort),
-        ),
-        upstream: service.upstream,
-        enabled: true,
-      };
-      validateService(route, profile.fnId);
-      profile.services.push(route);
-      notify("映射已添加。点击保存登录可一并保存服务配置。");
+      await addDiscovered(dockerPortService(row));
     } catch (error) {
       notify(String(error instanceof Error ? error.message : error), true);
     }
@@ -193,70 +308,101 @@ export function useWorkspace() {
         id: "",
         name: "",
         nasPort: 8084,
-        localPort: suggestedLocalPort(
-          8084,
-          profile.services.map((s) => s.localPort),
-        ),
+        localPort: suggestedLocalPort(8084, occupiedPorts()),
         upstream: "",
         enabled: true,
       },
     );
+    suggestedEditorPort = editor.localPort;
     editing.value = true;
   }
-  function commitEditor() {
+  async function updateServices(services: ServiceRoute[]): Promise<boolean> {
+    const target = current.value;
+    if (!desktop) {
+      target.profile.services = services;
+      return true;
+    }
+    const result = await run("保存服务映射", async () => {
+      const status = await invoke<ProxyStatus>("update_services", {
+        connectionId: target.profile.id,
+        services: services.map((s) => ({ ...s })),
+      });
+      target.profile.services = services;
+      target.proxy = status;
+      notify("服务映射已保存");
+      return true;
+    });
+    return result === true;
+  }
+  async function commitEditor() {
+    if (busy.value) return;
     try {
-      if (proxy.value.running) throw new Error("请先停止代理再修改映射");
-      validateService(editor, profile.fnId);
-      if (profile.services.some((s) => s.id !== editor.id && s.localPort === editor.localPort))
-        throw new Error("本地端口已被另一个映射使用");
-      const index = profile.services.findIndex((s) => s.id === editor.id);
+      if (proxy.value.running && editor.id) throw new Error("请先停止代理再编辑已有映射");
+      validateService(editor, profile.value.fnId);
+      if (occupiedPorts(editor.id).includes(editor.localPort))
+        throw new Error("本地端口已被另一个连接或映射使用");
       const route = {
         ...editor,
         id: editor.id || crypto.randomUUID(),
         name: editor.name.trim(),
         upstream: new URL(editor.upstream).origin + "/",
       };
-      if (index < 0) profile.services.push(route);
-      else profile.services[index] = route;
-      editing.value = false;
+      const services = profile.value.services.map((s) => ({ ...s }));
+      const index = services.findIndex((s) => s.id === editor.id);
+      if (index < 0) services.push(route);
+      else services[index] = route;
+      if (await updateServices(services)) editing.value = false;
     } catch (error) {
       notify(String(error instanceof Error ? error.message : error), true);
     }
   }
-  function remove(route: ServiceRoute) {
+  async function remove(route: ServiceRoute) {
     if (proxy.value.running) {
       notify("请先停止代理再删除服务", true);
       return;
     }
-    profile.services = profile.services.filter((s) => s.id !== route.id);
+    await updateServices(profile.value.services.filter((s) => s.id !== route.id));
+  }
+  async function setServiceEnabled(route: ServiceRoute, enabled: boolean) {
+    if (proxy.value.running) return;
+    await updateServices(
+      profile.value.services.map((s) => ({
+        ...s,
+        enabled: s.id === route.id ? enabled : s.enabled,
+      })),
+    );
   }
   async function probe(route: ServiceRoute) {
     await run("测试服务", async () => {
-      probes[route.id] = await invoke<RouteProbe>("probe_service", { route });
+      probes.value[route.id] = await invoke<RouteProbe>("probe_service", {
+        connectionId: selectedConnectionId.value,
+        route,
+      });
       notify(
-        `${route.name} · HTTP ${probes[route.id]!.status} · ${probes[route.id]!.message}`,
-        !probes[route.id]!.reachable,
+        `${route.name} · HTTP ${probes.value[route.id]!.status} · ${probes.value[route.id]!.message}`,
+        !probes.value[route.id]!.reachable,
       );
     });
   }
   async function toggleProxy() {
     await run(proxy.value.running ? "停止代理" : "启动代理", async () => {
       if (proxy.value.running) {
-        await invoke("stop_proxy");
+        await invoke("stop_proxy", { connectionId: selectedConnectionId.value });
         await refresh();
         notify("本地代理已停止。");
         return;
       }
       if (!formMatchesSession.value) throw new Error("请先测试当前账号的连接");
       proxy.value = await invoke<ProxyStatus>("start_proxy", {
-        services: profile.services.map((s) => ({ ...s })),
+        connectionId: selectedConnectionId.value,
+        services: profile.value.services.map((s) => ({ ...s })),
       });
-      notify("代理已启动。本机浏览器和 API 客户端可使用下方本地地址。");
+      notify("代理已启动");
     });
   }
   async function refreshToken() {
     await run("更新服务凭据", async () => {
-      await invoke("refresh_session");
+      await invoke("refresh_session", { connectionId: selectedConnectionId.value });
       notify("服务访问凭据已更新，不需要复制 Cookie。");
     });
   }
@@ -276,13 +422,19 @@ export function useWorkspace() {
   onMounted(async () => {
     if (!desktop) return;
     try {
-      const bootstrap = await invoke<{ profile: Profile; hasSavedPassword: boolean }>(
-        "get_bootstrap",
-      );
-      Object.assign(profile, bootstrap.profile);
-      savedIdentity.value = bootstrap.hasSavedPassword
-        ? `${profile.fnId.trim().toLowerCase()}\n${profile.username.trim()}`
-        : "";
+      const bootstrap = await invoke<{
+        profiles: { profile: Profile; hasSavedPassword: boolean }[];
+      }>("get_bootstrap");
+      if (bootstrap.profiles.length) {
+        connections.splice(
+          0,
+          connections.length,
+          ...bootstrap.profiles.map((item) =>
+            createConnection(item.profile, item.hasSavedPassword, Boolean(item.profile.fnId)),
+          ),
+        );
+        selectedConnectionId.value = connections[0]!.profile.id;
+      }
       logs.value = await invoke<LogEntry[]>("get_logs");
       unlisten = await listen<LogEntry>("fn-proxy:log", ({ payload }) => {
         logs.value = [...logs.value.slice(-199), payload];
@@ -301,11 +453,18 @@ export function useWorkspace() {
     if (timer) clearInterval(timer);
     if (noticeTimer) clearTimeout(noticeTimer);
     unlisten?.();
-    password.value = "";
-    otp.value = "";
+    for (const target of connections) {
+      target.password = "";
+      target.otp = "";
+    }
   });
   return {
     desktop,
+    connections,
+    savedConnections,
+    selectedConnectionId,
+    addConnection,
+    removeConnection,
     profile,
     password,
     otp,
@@ -332,12 +491,14 @@ export function useWorkspace() {
     showEditor,
     commitEditor,
     remove,
+    setServiceEnabled,
     probe,
     toggleProxy,
     refreshToken,
     copy,
     open,
     addDiscovered,
+    addDockerPort,
     localUrl,
   };
 }

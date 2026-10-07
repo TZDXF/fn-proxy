@@ -36,14 +36,25 @@ describe("profile and route validation", () => {
     ])
       expect(() => validateService(route(url), "my-nas")).toThrow();
   });
-  it("enforces integer ports and avoids privileged listeners", () => {
-    for (const port of [0, 22, 80, 65536, 1234.5])
+  it("enforces integer ports and supports the full service port range", () => {
+    for (const port of [22, 80, 443, 8084, 65535])
+      expect(() => validateService({ ...route(), localPort: port }, "my-nas")).not.toThrow();
+    for (const port of [0, 65536, 1234.5])
       expect(() => validateService({ ...route(), localPort: port }, "my-nas")).toThrow();
   });
-  it("suggests independent local ports", () => {
-    expect(suggestedLocalPort(8084)).toBe(18084);
-    expect(suggestedLocalPort(8084, [18084, 18085])).toBe(18086);
-    expect(suggestedLocalPort(65000)).toBe(18080);
+  it("prefers the service port and avoids occupied ports", () => {
+    expect(suggestedLocalPort(8084)).toBe(8084);
+    expect(suggestedLocalPort(8084, [8084, 8085])).toBe(8086);
+    expect(suggestedLocalPort(65000)).toBe(65000);
+    expect(suggestedLocalPort(80)).toBe(80);
+    expect(suggestedLocalPort(65535, [65535, 1])).toBe(2);
+    for (const port of [0, 65536, 1.5, NaN]) expect(() => suggestedLocalPort(port)).toThrow();
+    expect(() =>
+      suggestedLocalPort(
+        8084,
+        Array.from({ length: 65535 }, (_, i) => i + 1),
+      ),
+    ).toThrow();
     expect(localUrl(18084)).toBe("http://127.0.0.1:18084/");
   });
 });

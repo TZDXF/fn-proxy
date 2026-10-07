@@ -353,6 +353,33 @@ async fn bridge(
     };
     tokio::select! {_=to_remote=>{},_=to_local=>{},_=cancel.cancelled()=>{}}
 }
+// Keep existing listeners untouched when adding routes to a running proxy.
+pub fn additional_routes(
+    routes: &[ServiceRoute],
+    listeners: &[ListenerInfo],
+) -> Result<Vec<ServiceRoute>> {
+    for listener in listeners {
+        if !routes.iter().any(|route| {
+            route.enabled
+                && listener.local_url == format!("http://127.0.0.1:{}/", route.local_port)
+                && listener.upstream == route.upstream
+                && listener.nas_port == route.nas_port
+                && listener.name == route.name
+        }) {
+            return Err(error("请先停止代理再编辑或删除已有映射"));
+        }
+    }
+    Ok(routes
+        .iter()
+        .filter(|route| {
+            route.enabled
+                && !listeners.iter().any(|listener| {
+                    listener.local_url == format!("http://127.0.0.1:{}/", route.local_port)
+                })
+        })
+        .cloned()
+        .collect())
+}
 pub async fn start(
     routes: &[ServiceRoute],
     fn_id: &str,
@@ -370,7 +397,12 @@ pub async fn start(
         reserved.push(
             TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, route.local_port))
                 .await
-                .map_err(|_| error(format!("本地端口 {} 被占用，代理未启动", route.local_port)))?,
+                .map_err(|e| {
+                    error(format!(
+                        "无法监听本地端口 {}：{e}；请选择其他端口",
+                        route.local_port
+                    ))
+                })?,
         );
     }
     let http = reqwest::Client::builder()

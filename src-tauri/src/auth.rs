@@ -1,4 +1,5 @@
 use crate::{
+    docker::{ContainerCollector, ContainerMetadata, ContainerPacket, StreamLimits, StreamMatch},
     error::{error, Result},
     resolver::{browser_client, millis, BROWSER_UA},
     types::{ConnectionInfo, DiscoveredService},
@@ -152,12 +153,12 @@ impl RpcClient {
         })
         .await?
     }
-    pub async fn call(
+    async fn send_request(
         &mut self,
         method: &str,
         mut arguments: Value,
         encrypted: bool,
-    ) -> Result<Value> {
+    ) -> Result<String> {
         self.next_id += 1;
         let id = self.next_id.to_string();
         arguments["req"] = json!(method);
@@ -177,7 +178,57 @@ impl RpcClient {
             signed_message(&arguments, &self.secret)?
         };
         self.socket.send(Message::Text(wire.into())).await?;
+        Ok(id)
+    }
+    pub async fn call(&mut self, method: &str, arguments: Value, encrypted: bool) -> Result<Value> {
+        let id = self.send_request(method, arguments, encrypted).await?;
         self.receive(&id).await
+    }
+    pub async fn list_containers(&mut self) -> Result<Vec<ContainerMetadata>> {
+        self.list_containers_with_limits(StreamLimits::default())
+            .await
+    }
+    async fn list_containers_with_limits(
+        &mut self,
+        limits: StreamLimits,
+    ) -> Result<Vec<ContainerMetadata>> {
+        let id = self
+            .send_request("appcgi.dockermgr.containerList", json!({"all":true}), false)
+            .await?;
+        tokio::time::timeout(limits.total, async {
+            let mut collector = ContainerCollector::new(limits);
+            let mut packets = 0;
+            loop {
+                let message = tokio::time::timeout(limits.idle, self.socket.next())
+                    .await
+                    .map_err(|_| error("容器清单等待分段或成功终态超时；未返回残缺结果"))?
+                    .ok_or_else(|| error("容器列表未完成前认证连接断开"))??;
+                match message {
+                    Message::Text(text) => {
+                        packets += 1;
+                        if packets > limits.packets || text.len() > limits.frame_bytes {
+                            return Err(error("容器清单响应超过安全上限；未截断后冒充完整结果"));
+                        }
+                        // First parse only reqid; unrelated packets need not match the container schema.
+                        let header: StreamMatch = serde_json::from_str(&text)
+                            .map_err(|_| error("容器清单收到无效 JSON"))?;
+                        if header.reqid.as_ref().and_then(Value::as_str) != Some(id.as_str()) {
+                            continue;
+                        }
+                        let packet: ContainerPacket = serde_json::from_str(&text)
+                            .map_err(|_| error("容器列表返回结构变化，未把未知格式当作空清单"))?;
+                        if collector.push(packet)? {
+                            return collector.finish();
+                        }
+                    }
+                    Message::Ping(bytes) => self.socket.send(Message::Pong(bytes)).await?,
+                    Message::Close(_) => return Err(error("容器列表未完成前 NAS 关闭认证连接")),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| error("容器清单总等待时间超限；未返回分段残留"))?
     }
     pub async fn heartbeat(&mut self) -> Result<()> {
         self.socket
@@ -328,17 +379,30 @@ impl NasSession {
         }))
     }
     pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {
-        let entries = self
-            .rpc
-            .lock()
-            .await
+        let mut rpc = self.rpc.lock().await;
+        let desktop = rpc
             .call(
                 "appcgi.sac.entry.v1.getEntryList",
                 json!({"data":{"language":"zh_CN"}}),
                 false,
             )
-            .await?;
-        crate::inventory::parse_inventory(&entries, &self.info.fn_id)
+            .await
+            .and_then(|value| crate::inventory::parse_inventory(&value, &self.info.fn_id));
+        // The Docker iframe sends this request without a data field.
+        // This is the same read-only registry that powers its Quick Access menu.
+        let docker = rpc
+            .call("appcgi.sac.entry.v1.dockerList", json!({}), false)
+            .await
+            .and_then(|value| crate::inventory::parse_docker_inventory(&value, &self.info.fn_id));
+        let containers = rpc.list_containers().await;
+        // Successful port metadata is still useful even if both remote registries are unavailable.
+        let mut report = match crate::inventory::merge_inventories(desktop, docker) {
+            Ok(report) => report,
+            Err(e) if containers.is_err() => return Err(e),
+            Err(_) => crate::inventory::unavailable_registries(),
+        };
+        crate::docker::attach_container_ports(&mut report, containers);
+        Ok(report)
     }
     pub async fn discover(&self) -> Result<Vec<DiscoveredService>> {
         Ok(self.inventory().await?.services)

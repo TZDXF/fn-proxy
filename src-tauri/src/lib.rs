@@ -1,5 +1,6 @@
 mod auth;
 mod commands;
+mod docker;
 mod error;
 mod inventory;
 mod proxy;
@@ -14,7 +15,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let path = app.path().app_config_dir()?.join("profile.json");
-            let profile = storage::load_profile(&path).unwrap_or_default();
+            let profile = storage::load_profiles(&path).unwrap_or_default();
             let state = Arc::new(commands::AppState::new(path, profile));
             app.manage(state.clone());
             commands::auto_connect(app.handle().clone(), state);
@@ -33,7 +34,9 @@ pub fn run() {
             commands::probe_service,
             commands::refresh_session,
             commands::start_proxy,
-            commands::stop_proxy
+            commands::update_services,
+            commands::stop_proxy,
+            commands::remove_connection
         ])
         .build(tauri::generate_context!())
         .expect("FN Proxy startup failed");

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
+    #[serde(default = "default_connection_id")]
+    pub id: String,
     pub fn_id: String,
     pub username: String,
     #[serde(default)]
@@ -12,6 +14,14 @@ pub struct Profile {
     pub auto_connect: bool,
     #[serde(default)]
     pub services: Vec<ServiceRoute>,
+}
+fn default_connection_id() -> String {
+    "default".to_owned()
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProfiles {
+    pub profiles: Vec<Profile>,
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +51,8 @@ pub struct DiscoveredService {
 #[serde(rename_all = "camelCase")]
 pub struct InventoryEntry {
     pub id: String,
+    pub source: String,
+    pub app_id: Option<String>,
     pub name: String,
     pub nas_port: Option<u16>,
     pub fn_domain: Option<String>,
@@ -51,7 +63,46 @@ pub struct InventoryEntry {
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InventorySource {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub count: Option<usize>,
+    pub message: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerPortRow {
+    pub id: String,
+    pub container_id: String,
+    pub container_name: String,
+    pub state: String,
+    pub protocol: String,
+    pub host_ip: Option<String>,
+    pub nas_port: Option<u16>,
+    pub container_port: Option<u16>,
+    pub upstream: Option<String>,
+    pub fn_domain: Option<String>,
+    pub status: String,
+    pub reason: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerPortInventory {
+    pub containers: usize,
+    pub published_ports: usize,
+    pub mapped_ports: usize,
+    pub unmapped_ports: usize,
+    pub unconfirmed_ports: usize,
+    pub registry_available: bool,
+    pub rows: Vec<DockerPortRow>,
+    pub scope: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServiceInventory {
+    pub docker: Option<DockerPortInventory>,
+    pub sources: Vec<InventorySource>,
     pub total_entries: usize,
     pub mapped_entries: usize,
     pub unmapped_entries: usize,
@@ -62,6 +113,11 @@ pub struct ServiceInventory {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
+    pub profiles: Vec<SavedProfile>,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedProfile {
     pub profile: Profile,
     pub has_saved_password: bool,
 }
@@ -103,6 +159,12 @@ pub struct ListenerInfo {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
+    pub connections: Vec<ConnectionSnapshot>,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionSnapshot {
+    pub id: String,
     pub connection: ConnectionInfo,
     pub proxy: ProxyStatus,
 }
@@ -162,8 +224,8 @@ pub fn validate_routes(routes: &[ServiceRoute], fn_id: &str) -> Result<()> {
         return Err(error("最多配置 32 个服务"));
     }
     for route in routes.iter().filter(|s| s.enabled) {
-        if route.local_port < 1024 || route.nas_port == 0 {
-            return Err(error("本地端口需为 1024–65535，NAS 端口不能为 0"));
+        if route.local_port == 0 || route.nas_port == 0 {
+            return Err(error("端口需为 1–65535，不能为 0"));
         }
         if !ports.insert(route.local_port) {
             return Err(error("多个服务不能使用相同本地端口"));

@@ -7,6 +7,7 @@ export interface ServiceRoute {
   enabled: boolean;
 }
 export interface Profile {
+  id: string;
   fnId: string;
   username: string;
   remember: boolean;
@@ -33,6 +34,10 @@ export interface ProxyStatus {
   requests: number;
 }
 export interface AppSnapshot {
+  connections: ConnectionSnapshot[];
+}
+export interface ConnectionSnapshot {
+  id: string;
   connection: ConnectionInfo;
   proxy: ProxyStatus;
 }
@@ -46,6 +51,8 @@ export interface DiscoveredService {
 }
 export interface InventoryEntry {
   id: string;
+  source: string;
+  appId: string | null;
   name: string;
   nasPort: number | null;
   fnDomain: string | null;
@@ -54,7 +61,46 @@ export interface InventoryEntry {
   status: "mapped" | "no-port" | "no-domain" | "invalid-domain";
   reason: string;
 }
+export interface InventorySource {
+  id: string;
+  name: string;
+  status: "ok" | "unavailable";
+  count: number | null;
+  message: string;
+}
+export interface DockerPortRow {
+  id: string;
+  containerId: string;
+  containerName: string;
+  state: string;
+  protocol: string;
+  hostIp: string | null;
+  nasPort: number | null;
+  containerPort: number | null;
+  upstream: string | null;
+  fnDomain: string | null;
+  status:
+    | "mapped"
+    | "no-domain"
+    | "registry-unavailable"
+    | "not-published"
+    | "unsupported-protocol"
+    | "ambiguous";
+  reason: string;
+}
+export interface DockerPortInventory {
+  containers: number;
+  publishedPorts: number;
+  mappedPorts: number;
+  unmappedPorts: number;
+  unconfirmedPorts: number;
+  registryAvailable: boolean;
+  rows: DockerPortRow[];
+  scope: string;
+}
 export interface ServiceInventory {
+  docker: DockerPortInventory | null;
+  sources: InventorySource[];
   totalEntries: number;
   mappedEntries: number;
   unmappedEntries: number;
@@ -85,7 +131,6 @@ export function validateService(route: ServiceRoute, fnId: string): void {
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       throw new Error("端口需为 1–65535 的整数");
   }
-  if (route.localPort < 1024) throw new Error("本地端口必须大于等于 1024");
   let url: URL;
   try {
     url = new URL(route.upstream);
@@ -106,11 +151,45 @@ export function validateService(route: ServiceRoute, fnId: string): void {
   }
 }
 export function suggestedLocalPort(nasPort: number, occupied: number[] = []): number {
-  let port = nasPort > 0 && nasPort < 10000 ? 10000 + nasPort : 18080;
-  while (occupied.includes(port) && port < 65535) port += 1;
-  if (occupied.includes(port)) throw new Error("没有可建议的本地端口");
-  return port;
+  if (!Number.isInteger(nasPort) || nasPort < 1 || nasPort > 65535)
+    throw new Error("端口需为 1–65535 的整数");
+  const used = new Set(occupied);
+  for (let offset = 0; offset < 65535; offset += 1) {
+    const port = ((nasPort - 1 + offset) % 65535) + 1;
+    if (!used.has(port)) return port;
+  }
+  throw new Error("没有可建议的本地端口");
 }
 export function localUrl(port: number): string {
   return `http://127.0.0.1:${port}/`;
+}
+
+export function dockerPortService(row: DockerPortRow): DiscoveredService {
+  if (
+    row.status !== "mapped" ||
+    row.protocol !== "tcp" ||
+    !row.nasPort ||
+    !row.upstream ||
+    !row.fnDomain
+  ) {
+    throw new Error("该记录尚未取得明确的 TCP 端口与远程域名关联，不能创建代理映射");
+  }
+  return {
+    id: row.id,
+    name: `${row.containerName}:${row.nasPort}`,
+    nasPort: row.nasPort,
+    upstream: row.upstream,
+    fnDomain: row.fnDomain,
+    source: "Docker 容器端口与快捷访问映射关联",
+  };
+}
+export function dockerPortStatus(status: DockerPortRow["status"]): string {
+  return {
+    mapped: "已注册，待测试",
+    "no-domain": "未匹配到域名",
+    "registry-unavailable": "映射来源未知",
+    "not-published": "无宿主机端口",
+    "unsupported-protocol": "协议不支持",
+    ambiguous: "关联存在歧义",
+  }[status];
 }

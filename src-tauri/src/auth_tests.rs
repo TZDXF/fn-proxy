@@ -15,10 +15,23 @@ use rsa::{
 };
 use tokio::net::TcpListener;
 
+#[derive(Clone, Copy)]
+enum MockStream {
+    Complete,
+    Denied,
+    PartialFail,
+    NoTerminal,
+    Disconnect,
+    Malformed,
+    Oversized,
+    SlowProgress,
+}
 #[derive(Clone)]
 struct MockNas {
     private: Arc<RsaPrivateKey>,
     ticket_mode: bool,
+    docker_allowed: bool,
+    stream_mode: MockStream,
 }
 const MOCK_SECRET: &[u8] = b"fixture-session-secret-not-a-real-credential";
 async fn login_page(headers: HeaderMap) -> impl IntoResponse {
@@ -67,7 +80,19 @@ async fn upgrade(
 }
 async fn serve_mock(mut socket: WebSocket, state: MockNas) {
     let mut authenticated = false;
-    while let Some(Ok(MockMessage::Text(text))) = socket.recv().await {
+    while let Some(Ok(message)) = socket.recv().await {
+        let text = match message {
+            MockMessage::Text(text) => text,
+            MockMessage::Ping(bytes) => {
+                if socket.send(MockMessage::Pong(bytes)).await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            MockMessage::Pong(_) => continue,
+            MockMessage::Close(_) => break,
+            _ => continue,
+        };
         if text == "{\"req\":\"ping\"}" {
             socket
                 .send(MockMessage::Text("{\"res\":\"pong\"}".into()))
@@ -108,6 +133,15 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
             payload = serde_json::from_str(&text[44..]).unwrap();
         }
         let id = &payload["reqid"];
+        if payload["req"] == "appcgi.dockermgr.containerList" {
+            assert!(authenticated);
+            assert_eq!(payload["all"], true);
+            assert!(payload.get("data").is_none());
+            if !serve_container_stream(&mut socket, id, state.stream_mode).await {
+                break;
+            }
+            continue;
+        }
         let response = match payload["req"].as_str().unwrap() {
             "util.crypto.getRSAPub" => {
                 json!({"reqid":id,"res":"util.crypto.getRSAPub","pub":state.private.to_public_key().to_public_key_pem(LineEnding::LF).unwrap(),"si":"fixture-si","result":"suc"})
@@ -131,6 +165,21 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
             "appcgi.sac.entry.v1.getEntryList" => {
                 json!({"reqid":id,"result":"suc","data":{"list":[{"entryKey":"fixture-app","title":"Fixture service","uri":{"port":"8084","fnDomain":"fixture-0"}},{"entryKey":"fixture-local","title":"Local-only fixture","uri":{"port":"9090"}},{"entryKey":"fixture-builtin","title":"Builtin fixture","uri":{"path":"/app/fixture"}}]}})
             }
+            "appcgi.sac.entry.v1.dockerList" => {
+                assert!(
+                    payload.get("data").is_none(),
+                    "Docker iframe omits data on this request"
+                );
+                if state.docker_allowed {
+                    json!({"reqid":id,"result":"suc","data":{"list":[
+                        {"appID":"fixture-container","uri":{"port":"8084","fnDomain":"fixture-0"}},
+                        {"appID":"fixture-container","uri":{"port":"3000","fnDomain":"fixture-docker-0"}},
+                        {"appID":"fixture-local","uri":{"port":"5000"}}
+                    ]}})
+                } else {
+                    json!({"reqid":id,"result":"fail","errno":9999})
+                }
+            }
             method => panic!("unexpected mock RPC: {method}"),
         };
         socket
@@ -140,9 +189,24 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
     }
 }
 pub(crate) async fn mock_server(ticket_mode: bool) -> (url::Url, tokio::task::JoinHandle<()>) {
+    mock_server_with_docker(ticket_mode, true).await
+}
+async fn mock_server_with_docker(
+    ticket_mode: bool,
+    docker_allowed: bool,
+) -> (url::Url, tokio::task::JoinHandle<()>) {
+    mock_server_with_stream(ticket_mode, docker_allowed, MockStream::Complete).await
+}
+async fn mock_server_with_stream(
+    ticket_mode: bool,
+    docker_allowed: bool,
+    stream_mode: MockStream,
+) -> (url::Url, tokio::task::JoinHandle<()>) {
     let state = MockNas {
         private: Arc::new(RsaPrivateKey::new(&mut rand::thread_rng(), 1024).unwrap()),
         ticket_mode,
+        docker_allowed,
+        stream_mode,
     };
     let app = Router::new()
         .route("/login", get(login_page))
@@ -172,15 +236,54 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     assert_eq!(session.info.auth_mode, "ticket-cookie");
     assert_eq!(&**session.entry_token.read().await, "fixture-entry-token");
     let inventory = session.inventory().await.unwrap();
-    assert_eq!(inventory.total_entries, 3);
-    assert_eq!(inventory.mapped_entries, 1);
-    assert_eq!(inventory.unmapped_entries, 2);
+    assert_eq!(inventory.total_entries, 6);
+    assert_eq!(inventory.mapped_entries, 3);
+    assert_eq!(inventory.unmapped_entries, 3);
     assert_eq!(inventory.entries[1].status, "no-domain");
     assert_eq!(inventory.entries[2].status, "no-port");
+    assert_eq!(inventory.sources[1].status, "ok");
+    assert_eq!(inventory.sources[1].count, Some(3));
+    assert_eq!(inventory.services.len(), 2);
+    let ports = inventory.docker.as_ref().unwrap();
+    assert_eq!(ports.containers, 3);
+    assert_eq!(ports.published_ports, 5);
+    assert_eq!(ports.mapped_ports, 2);
+    assert_eq!(ports.unmapped_ports, 2);
+    assert_eq!(ports.rows.len(), 6);
+    assert_eq!(ports.rows.last().unwrap().status, "no-domain");
+    assert!(ports.rows.last().unwrap().upstream.is_none());
+    let exported = serde_json::to_string(&inventory).unwrap();
+    assert!(!exported.contains("fixture-secret-environment"));
+    assert!(!exported.contains("env"));
+    assert_eq!(inventory.sources[2].status, "ok");
+
     let services = session.discover().await.unwrap();
     assert_eq!(services[0].nas_port, 8084);
     assert_eq!(services[0].fn_domain, "fixture-0");
     session.refresh_entry_token().await.unwrap();
+    session.rpc.lock().await.heartbeat().await.unwrap();
+    session.rpc.lock().await.close().await;
+    server.abort();
+}
+#[tokio::test]
+async fn docker_permission_failure_retains_desktop_inventory_and_rpc_session() {
+    let (base, server) = mock_server_with_docker(true, false).await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let report = session.inventory().await.unwrap();
+    assert_eq!(report.total_entries, 3);
+    assert_eq!(report.services.len(), 1);
+    assert_eq!(report.sources[0].status, "ok");
+    assert_eq!(report.sources[1].status, "unavailable");
+    assert_eq!(report.sources[1].count, None);
     session.rpc.lock().await.heartbeat().await.unwrap();
     session.rpc.lock().await.close().await;
     server.abort();
@@ -246,4 +349,182 @@ async fn live_fn_connect_handshake() {
     assert!(public["si"].is_string());
     CryptoContext::new(public["pub"].as_str().unwrap()).unwrap();
     rpc.close().await;
+}
+
+async fn stream_json(socket: &mut WebSocket, value: Value) -> bool {
+    socket
+        .send(MockMessage::Text(value.to_string().into()))
+        .await
+        .is_ok()
+}
+async fn serve_container_stream(socket: &mut WebSocket, id: &Value, mode: MockStream) -> bool {
+    if matches!(mode, MockStream::Denied) {
+        return stream_json(socket, json!({"reqid":id,"result":"fail","errno":9999})).await;
+    }
+    if !stream_json(
+        socket,
+        json!({"reqid":"fixture-unrelated","result":"fail","errno":9999,"rsp":"not-an-array"}),
+    )
+    .await
+    {
+        return false;
+    }
+    if !stream_json(
+        socket,
+        json!({"reqid":id,"result":"doing","rsp":[{
+            "id":"fixture-container-full-id","names":["/fixture web"],"state":"running",
+            "env":["API_KEY=fixture-secret-environment"],
+            "ports":[{"publicPort":8084,"privatePort":80,"type":"tcp","ip":"0.0.0.0"}]
+        }]}),
+    )
+    .await
+    {
+        return false;
+    }
+    match mode {
+        MockStream::PartialFail => {
+            return stream_json(socket, json!({"reqid":id,"result":"fail","errno":9999})).await
+        }
+        MockStream::NoTerminal => return true,
+        MockStream::Disconnect => {
+            let _ = socket.send(MockMessage::Close(None)).await;
+            return false;
+        }
+        MockStream::Malformed => {
+            return stream_json(
+                socket,
+                json!({"reqid":id,"result":"succ","rsp":{"unexpected":"schema"}}),
+            )
+            .await
+        }
+        MockStream::Oversized => {
+            return stream_json(
+                socket,
+                json!({"reqid":id,"result":"doing","padding":"x".repeat(4096)}),
+            )
+            .await
+        }
+        MockStream::SlowProgress => {
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(75)).await;
+                if !stream_json(socket, json!({"reqid":id,"result":"doing","rsp":[]})).await {
+                    return false;
+                }
+            }
+            return stream_json(socket, json!({"reqid":id,"result":"succ"})).await;
+        }
+        _ => {}
+    }
+    if socket
+        .send(MockMessage::Ping(b"fixture-heartbeat".to_vec().into()))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    if !stream_json(
+        socket,
+        json!({"reqid":id,"result":"doing","rsp":[
+            {"id":"fixture-container-full-id","ports":[
+                {"publicPort":8084,"privatePort":80,"type":"tcp","ip":"0.0.0.0"},
+                {"publicPort":3000,"privatePort":3000,"type":"tcp"}
+            ]},
+            {"id":"fixture-local-full-id","names":["/fixture local"],"state":"exited","ports":[
+                {"publicPort":5000,"privatePort":5000,"type":"tcp"},
+                {"privatePort":5432,"type":"tcp"},
+                {"publicPort":5353,"privatePort":5353,"type":"udp"}
+            ]}
+        ]}),
+    )
+    .await
+    {
+        return false;
+    }
+    stream_json(
+        socket,
+        json!({"reqid":id,"result":"succ","rsp":[
+            {"id":"fixture-other-full-id","names":["/fixture other"],"state":"running","ports":[
+                {"publicPort":8084,"privatePort":80,"type":"tcp","ip":"127.0.0.2"}
+            ]}
+        ]}),
+    )
+    .await
+}
+#[tokio::test]
+async fn container_stream_errors_and_timeouts_never_return_partial_metadata() {
+    for mode in [
+        MockStream::Denied,
+        MockStream::PartialFail,
+        MockStream::NoTerminal,
+        MockStream::Disconnect,
+        MockStream::Malformed,
+        MockStream::Oversized,
+        MockStream::SlowProgress,
+    ] {
+        let (base, server) = mock_server_with_stream(true, true, mode).await;
+        let session = NasSession::login(
+            base,
+            "my-nas",
+            "fixture-user",
+            "fixture-password",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let limits = match mode {
+            MockStream::NoTerminal => StreamLimits {
+                total: Duration::from_secs(1),
+                idle: Duration::from_millis(30),
+                ..StreamLimits::default()
+            },
+            MockStream::Oversized => StreamLimits {
+                frame_bytes: 512,
+                ..StreamLimits::default()
+            },
+            MockStream::SlowProgress => StreamLimits {
+                total: Duration::from_millis(100),
+                idle: Duration::from_secs(1),
+                ..StreamLimits::default()
+            },
+            _ => StreamLimits::default(),
+        };
+        let result = session
+            .rpc
+            .lock()
+            .await
+            .list_containers_with_limits(limits)
+            .await;
+        assert!(
+            result.is_err(),
+            "A failed/incomplete stream cannot become a port inventory"
+        );
+        let message = result.err().unwrap().to_string();
+        assert!(!message.contains("fixture-secret-environment"));
+        session.rpc.lock().await.close().await;
+        server.abort();
+    }
+}
+#[tokio::test]
+async fn interrupted_container_source_preserves_registered_mappings_and_session() {
+    let (base, server) = mock_server_with_stream(true, true, MockStream::PartialFail).await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let report = session.inventory().await.unwrap();
+    assert_eq!(report.services.len(), 2);
+    assert_eq!(report.total_entries, 6);
+    assert!(report.docker.is_none());
+    assert_eq!(report.sources[2].status, "unavailable");
+    assert_eq!(report.sources[2].count, None);
+    session.rpc.lock().await.heartbeat().await.unwrap();
+    session.rpc.lock().await.close().await;
+    server.abort();
 }

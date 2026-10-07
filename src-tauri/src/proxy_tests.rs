@@ -291,3 +291,171 @@ async fn stop_releases_listener_and_http_upstreams_stay_forbidden() {
     insecure.upstream = "http://127.0.0.1:8084/".into();
     assert!(start(&[insecure], "my-nas", hub, counter).await.is_err());
 }
+
+#[tokio::test]
+async fn incrementally_added_listener_preserves_existing_socket_and_counter() {
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_port = first.local_addr().unwrap().port();
+    let second_port = second.local_addr().unwrap().port();
+    drop((first, second));
+    let hub = Arc::new(RwLock::new(None));
+    let counter = Arc::new(AtomicU64::new(42));
+    let existing = start(&[route(first_port)], "my-nas", hub.clone(), counter.clone())
+        .await
+        .unwrap();
+    let old_cancel = existing[0].cancel.clone();
+    let listeners = existing.iter().map(|h| h.info.clone()).collect::<Vec<_>>();
+    let additions =
+        additional_routes(&[route(first_port), route(second_port)], &listeners).unwrap();
+    assert_eq!(additions.len(), 1);
+    assert_eq!(additions[0].local_port, second_port);
+    let added = start(&additions, "my-nas", hub, counter.clone())
+        .await
+        .unwrap();
+    assert!(!old_cancel.is_cancelled());
+    assert_eq!(counter.load(Ordering::Relaxed), 42);
+    for port in [first_port, second_port] {
+        assert_eq!(
+            reqwest::get(format!("http://127.0.0.1:{port}/"))
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+    }
+    stop(added).await;
+    assert!(!old_cancel.is_cancelled());
+    assert_eq!(
+        reqwest::get(format!("http://127.0.0.1:{first_port}/"))
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    stop(existing).await;
+}
+
+#[tokio::test]
+async fn incremental_port_conflict_keeps_old_listener_alive_and_releases_new_ports() {
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let free = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_port = first.local_addr().unwrap().port();
+    let free_port = free.local_addr().unwrap().port();
+    let busy_port = occupied.local_addr().unwrap().port();
+    drop((first, free));
+    let hub = Arc::new(RwLock::new(None));
+    let counter = Arc::new(AtomicU64::new(9));
+    let old = start(&[route(first_port)], "my-nas", hub.clone(), counter.clone())
+        .await
+        .unwrap();
+    let result = start(
+        &[route(free_port), route(busy_port)],
+        "my-nas",
+        hub,
+        counter.clone(),
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(!old[0].cancel.is_cancelled());
+    assert_eq!(counter.load(Ordering::Relaxed), 9);
+    assert!(
+        TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, free_port))
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        reqwest::get(format!("http://127.0.0.1:{first_port}/"))
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    stop(old).await;
+}
+
+#[test]
+fn running_routes_cannot_be_removed_changed_or_disabled() {
+    let original = route(18084);
+    let listener = ListenerInfo {
+        name: original.name.clone(),
+        nas_port: original.nas_port,
+        local_url: "http://127.0.0.1:18084/".to_owned(),
+        upstream: original.upstream.clone(),
+    };
+    let listeners = vec![listener];
+    assert!(
+        additional_routes(std::slice::from_ref(&original), &listeners)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(additional_routes(&[], &listeners).is_err());
+    for changed in [
+        ServiceRoute {
+            enabled: false,
+            ..original.clone()
+        },
+        ServiceRoute {
+            local_port: 18085,
+            ..original.clone()
+        },
+        ServiceRoute {
+            upstream: "https://other.my-nas.fnos.net/".into(),
+            ..original.clone()
+        },
+        ServiceRoute {
+            name: "renamed".into(),
+            ..original.clone()
+        },
+        ServiceRoute {
+            nas_port: 9090,
+            ..original
+        },
+    ] {
+        assert!(additional_routes(&[changed], &listeners).is_err());
+    }
+}
+
+#[tokio::test]
+async fn adding_a_listener_does_not_interrupt_an_existing_websocket() {
+    let f = fixture().await;
+    let mut ws_url = f.local.join("ws").unwrap();
+    ws_url.set_scheme("ws").unwrap();
+    let mut request = ws_url.as_str().into_client_request().unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "fixture-protocol".parse().unwrap(),
+    );
+    let (mut socket, _) = connect_async(request).await.unwrap();
+    socket
+        .send(RemoteMessage::Text("before add".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap(),
+        RemoteMessage::Text("before add".into())
+    );
+    let free = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = free.local_addr().unwrap().port();
+    drop(free);
+    let added = start(
+        &[route(port)],
+        "my-nas",
+        f.hub.clone(),
+        Arc::new(AtomicU64::new(0)),
+    )
+    .await
+    .unwrap();
+    socket
+        .send(RemoteMessage::Text("after add".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap(),
+        RemoteMessage::Text("after add".into())
+    );
+    assert!(!f.cancel.is_cancelled());
+    socket.close(None).await.unwrap();
+    stop(added).await;
+}

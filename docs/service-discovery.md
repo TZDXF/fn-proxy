@@ -4,7 +4,7 @@
 
 ## 结论与覆盖边界
 
-可以从经过 NAS 正常认证的 WebSocket RPC `appcgi.sac.entry.v1.getEntryList` 获取**当前登录账号可见的已注册入口**，然后读取入口中的 `uri.port` 与 `uri.fnDomain` 配对。公开桌面前端用同一个列表建立应用入口集合。
+可以从经过 NAS 正常认证的 WebSocket RPC `appcgi.sac.entry.v1.getEntryList` 获取**当前登录账号可见的已注册入口**，然后读取入口中的 `uri.port` 与 `uri.fnDomain` 配对。公开桌面前端用同一个列表建立应用入口集合。后续 Docker 独立前端调查又确认了第二个数据源 `appcgi.sac.entry.v1.dockerList`；当前应用合并两者，并从第三来源 `appcgi.dockermgr.containerList` 盘点容器端口后交叉关联，详见 [Docker 快捷访问调查](docker-discovery.md)。
 
 但以下集合不能混为一谈：
 
@@ -15,7 +15,7 @@
 
 目前确认的是第 3 类中的端口 / 子域名配对；第 4 类需要逐个请求验证。没有确认一个可返回第 1 类全部端口及其 FN Connect 域名的全局 API，也没有证明未注册端口一定有对应域名。公开前端里没有找到某接口，不代表服务端内部一定不存在该接口。
 
-“读取全部”在本应用中指读取本次 `getEntryList` 响应的所有条目，而不是承诺突破权限、枚举系统全部监听端口或得到其他账号私有入口。
+“读取全部”在本应用中指读取本次成功返回的注册列表全部条目，以及容器列表成功终态确认的端口元数据，而不是承诺突破权限、枚举系统全部监听端口或得到其他账号私有入口。容器已发布端口、注册入口条目与去重服务数分别计数。
 
 ## 已确认的读取流程
 
@@ -27,6 +27,9 @@
   -> 每个入口保留 entryKey、title、uri.port、uri.fnDomain、uri.path
   -> 有有效 port + fnDomain：列为已注册映射候选
   -> 缺少字段：仍保留条目，说明不能建立端口代理的原因
+  -> dockerList：获取 Docker 注册入口配对与 appID 容器前缀
+  -> containerList，all = true：汇总匹配 reqid 的 rsp 分段，等待成功终态
+  -> 按容器 ID 前缀 + publicPort 关联远程域名，展示未匹配/未知/歧义原因
   -> 只对已知映射进行显式服务测试，不扫描未知端口
 ```
 
@@ -47,7 +50,7 @@ https://{uri.fnDomain}.{NAS 主域名}{uri.path}
 | `appcgi.sac.entry.v1.getEntryList`                             | 桌面初始化调用，参数含 `data.language`；读取 `data.list`                       | 当前确认的端口 / 子域名配对来源                                                |
 | `appcgi.sac.entry.v1.getUserDesktop`                           | 与上项并行调用，返回桌面条目，包含排序、分组、父条目等布局语义                 | 不是全服务列表；只看桌面图标会漏掉未放到桌面的入口                             |
 | `appcgi.sac.entry.v1.appStoreList`                             | 主脚本 RPC 注册表仍有定义                                                      | 尚未找到当前前端的有效调用与返回结构，不据此宣称能补齐所有端口                 |
-| `appcgi.sac.entry.v1.dockerList`                               | 主脚本常量中存在，但当前对应适配器未导出该方法，也未找到有效调用               | 可能是遗留定义，不能盲目调用或假定能枚举当前版本容器端口                       |
+| `appcgi.sac.entry.v1.dockerList`                               | 已在 `/apps/docker/` 独立前端确认实际调用，读取 `data.list`                    | Docker 快捷访问映射来源；主站适配器未导出不等于 Docker 模块未使用              |
 | `appcgi.netsvr.domain.list`                                    | `useFnConnect` 获取 `data` 域名数组；设置页用于 FN ID 表单的 `domain` 下拉选项 | 用于选择 FN Connect 域名后缀，不是服务子域名 / 端口映射表                      |
 | `exconn.getDomain`                                             | RPC 名称注册表中出现                                                           | 未找到足以确认请求参数与用途的实际调用，不当作全映射接口使用                   |
 | `/app-center/v1/config/list` 与 `/app-center/v1/config/detail` | 主脚本应用中心 HTTP 路由；配置适配器自动添加 `/app-center` 前缀                | 可作为后续安装应用配置交叉核对方向，但尚未验证返回结构和权限，不能替代映射列表 |
@@ -70,14 +73,17 @@ https://{uri.fnDomain}.{NAS 主域名}{uri.path}
 
 ## 本轮应用改动
 
-新增桌面命令 `get_service_inventory`，仍只调用已确认的 `getEntryList`。返回：
+桌面命令 `get_service_inventory` 当前读取 `getEntryList`、Docker 前端确认的 `dockerList` 和分段 `containerList`，分别解析后关联。返回：
 
-- `totalEntries`：本次响应条目总数。
+- `totalEntries`：成功读取的桌面与 Docker 注册条目总数，不含容器端口行数。
 - `mappedEntries`：拥有安全有效端口与子域名配对的条目数。
 - `unmappedEntries`：不能建立独立端口代理的条目数。
 - `services`：按端口与远程根地址去重的可配置服务。
 - `entries`：不去重的完整可见入口和未映射原因。
 - `scope`：权限与覆盖范围提示。
+- `sources`：桌面、Docker 注册映射、容器端口盘点三个来源的成功/不可读取状态及计数；容器来源计数为容器数，失败计数为未知。
+- `docker`：容器盘点成功时包含容器数、已发布绑定数、已映射/未匹配/关联未确认的数量，以及完整 `rows` 和覆盖范围；盘点失败时为 `null`，不返回部分记录。统计不把 UDP 或仅暴露端口当作可代理服务。
+- 每个 `entries` 条目附带 `source`；Docker 条目保留 `appId` 容器 ID 前缀关联。
 
 前端“服务映射”页新增完整入口清单，包括无端口、缺少远程子域名、不安全域名及已注册待测试状态。格式错误的响应不会静默当作空列表。切换登录或断开时清除旧账号清单，结果只保留在应用内存中。
 
@@ -100,4 +106,8 @@ https://{uri.fnDomain}.{NAS 主域名}{uri.path}
 
 Context7 查询到了飞牛应用开放平台的 manifest/桌面集成说明；没有查到内部 `fnDomain` 与完整远程端口枚举的正式文档。内部 RPC 的结论因此基于当前公开前端证据，属于版本相关分析，不是官方稳定接口承诺。
 
-本轮新增三项解析测试，并扩展加密登录模拟测试验证完整清单。实际 NAS 的账号权限、当前入口数量和完整返回结构，仍需用户在更新后的应用内登录并点击“从 NAS 读取”验证，不以模拟测试冒充真实服务端结果。
+离线解析与加密登录模拟测试已覆盖注册清单、容器分段汇总、域名关联、权限失败及超时/超限处理。实际 NAS 的账号权限、当前入口数量和完整返回结构，仍需用户在更新后的应用内登录并点击“从 NAS 读取”验证，不以模拟测试冒充真实服务端结果。
+
+## Docker 线索的修正
+
+本文件早期版本仅凭主站注册表与适配器分析，暂时把 `dockerList` 列为未确认的可能遗留定义。这一范围不足：Docker 实际运行在 `/apps/docker/` 的独立 iframe，其脚本明确调用该接口。用户提供“快捷访问”线索后已直接取得并分析该公开脚本，修正旧判断，并把读取逻辑加入应用。接口使用与容器关联规则见 [Docker 专项记录](docker-discovery.md)。

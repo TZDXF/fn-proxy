@@ -81,7 +81,7 @@ if (isFnConnect && uri.fnDomain && uri.port) {
 }
 ```
 
-入口列表来自 `appcgi.sac.entry.v1.getEntryList`，条目通常形如：
+桌面入口列表来自 `appcgi.sac.entry.v1.getEntryList`；Docker 快捷访问另从 `appcgi.sac.entry.v1.dockerList` 取得注册映射。两者都使用 `uri.port` 与 `uri.fnDomain`。桌面条目通常形如：
 
 ```json
 {
@@ -99,7 +99,7 @@ if (isFnConnect && uri.fnDomain && uri.port) {
 
 - 新旧 fnOS 版本的所有认证差异，包括 RSA-OAEP 分支。
 - entry-token 的 TTL、跨出口/IP 可用性、NAS 退出登录后的撤销行为。
-- 所有 Docker 服务是否均出现在入口列表中，及无 fnDomain 时的正式注册机制。
+- `dockerList` / `containerList` 在真实账号下的响应结构与权限，以及无 fnDomain 或未发布端口的正式注册机制。
 - 真实账号的当前配置、二次验证策略和具体业务 API 的认证。
 - OAuth、硬编码绝对地址、特殊 Cookie 与远程服务特有的兼容性。
 
@@ -116,4 +116,14 @@ if (isFnConnect && uri.fnDomain && uri.port) {
 
 2026-10-06 继续检查公开前端后，确认 `getUserDesktop` 是桌面布局/分组列表，不能替代 `getEntryList` 枚举可见入口；`appcgi.netsvr.domain.list` 在 FN ID 设置中用于域名后缀选择，也不是服务端口映射表。没有确认能够返回 NAS 所有监听端口与远程域名的全局接口。
 
-应用新增 `get_service_inventory` 桌面命令：调用已确认的只读 `getEntryList`，返回当前账号全部可见入口、映射/未映射原因、独立服务去重结果。详细来源、候选接口与覆盖范围见 [完整端口/子域名发现调查](service-discovery.md)。
+应用新增 `get_service_inventory` 桌面命令：调用已确认的只读 `getEntryList`、Docker 前端使用的 `dockerList` 与 `containerList`，返回当前账号可见注册入口、容器端口交叉关联、映射/未映射原因及独立服务去重结果。详细来源、候选接口与覆盖范围见 [完整端口/子域名发现调查](service-discovery.md)。
+
+## 8. Docker 快捷访问数据源
+
+用户提供 Docker 快捷访问线索后，进一步在 NAS 公开桌面代码中定位 iframe 根路径 `/apps/docker/`，并取得其独立脚本。脚本调用 `appcgi.sac.entry.v1.dockerList`（无 `data` 参数），读取 `data.list`。快捷访问先按 `container.id.startsWith(entry.appID)` 关联容器，再按容器宿主机端口与 `uri.port` 相等选取 `uri.fnDomain`。这补充了桌面入口列表之外的 Docker 注册映射，不代表全部 NAS 监听端口。详见 [Docker 快捷访问调查](docker-discovery.md)。
+
+## 9. 容器端口盘点与成功终态
+
+`appcgi.dockermgr.containerList` 使用顶层 `all:true`，不附加 `data`。与普通单响应 RPC 不同，它通过多条同 `reqid` 的 `rsp` 数组分段返回。应用独立汇总这些包、按容器 ID 合并端口绑定，直到 `result:"succ"`（兼容 `suc`）才允许展示。`doing` / 无 result 不视为完成；错误状态、断线、总超时、分段空闲或超过安全上限均报告失败，不能返回部分结果冒充全部。
+
+读取只保留容器 ID、名称、状态和端口元数据，不获取详情/环境变量/日志。域名关联必须同时匹配容器前缀和宿主机端口；Docker 注册来源失败时关联为未知，多个匹配域名或容器时为歧义。没有匹配的域名不会自行生成。UDP、仅容器暴露端口、host 网络模式监听端口与 NAS 非 Docker 服务不等价于可经 FN Connect 代理的 HTTP 入口。参数与分段行为来自公开 Docker 前端，真实账号权限与版本结构尚待验收。详见 [Docker 快捷访问调查](docker-discovery.md)。
