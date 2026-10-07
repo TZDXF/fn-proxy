@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("vue", () => ({ createApp: () => ({ mount: vi.fn() }) }));
+vi.mock("vue", () => ({
+  createApp: () => ({ use: () => ({ mount: vi.fn() }) }),
+  watch: () => vi.fn(),
+}));
+vi.mock("../lib/i18n", () => ({ i18n: { global: { t: () => "FN Proxy" } } }));
+vi.mock("../lib/preferences", () => ({
+  preferences: { locale: { value: "zh-CN" }, initialize: () => vi.fn() },
+}));
 vi.mock("../App.vue", () => ({ default: {} }));
 vi.mock("../style.css", () => ({}));
 
@@ -13,6 +20,7 @@ afterEach(() => {
 async function loadApp(production: boolean) {
   const document = new EventTarget();
   vi.stubGlobal("document", document);
+  vi.stubGlobal("window", { matchMedia: vi.fn() });
   vi.stubEnv("PROD", production);
   await import("../main");
   return document;

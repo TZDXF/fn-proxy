@@ -1,3 +1,4 @@
+import { i18n } from "./i18n";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -21,6 +22,7 @@ import {
 } from "./types";
 
 export function useWorkspace() {
+  const t = i18n.global.t;
   const desktop = isTauri();
   function createConnection(profile?: Profile, hasSavedPassword = false, saved = false) {
     const config: Profile = profile ?? {
@@ -48,7 +50,7 @@ export function useWorkspace() {
         username: "",
         relay: "",
         authMode: "",
-        message: "尚未连接 NAS",
+        message: t("connection.notConnected"),
       } as ConnectionInfo,
       proxy: { running: false, listeners: [], requests: 0 } as ProxyStatus,
     };
@@ -88,7 +90,7 @@ export function useWorkspace() {
       savedIdentity.value ===
       `${profile.value.fnId.trim().toLowerCase()}\n${profile.value.username.trim()}`,
   );
-  const section = ref<"overview" | "connections" | "services" | "logs">("overview");
+  const section = ref<"overview" | "connections" | "services" | "logs" | "settings">("overview");
   const savedConnections = computed(() => connections.filter((c) => c.saved));
   const busy = ref("");
   const notice = ref<{ message: string; error: boolean } | null>(null);
@@ -166,13 +168,13 @@ export function useWorkspace() {
       connections.splice(index, 1);
       if (!connections.length) connections.push(createConnection());
       selectedConnectionId.value = (connections.find((c) => c.saved) ?? connections[0]!).profile.id;
-      if (!silent) notify("连接已删除");
+      if (!silent) notify(t("notice.deleted"));
     };
     if (!desktop) {
       removeLocal();
       return;
     }
-    await run("删除连接", async () => {
+    await run("delete-connection", async () => {
       await invoke("remove_connection", { connectionId: id });
       removeLocal();
     });
@@ -189,7 +191,7 @@ export function useWorkspace() {
   }
   async function run<T>(label: string, action: () => Promise<T>): Promise<T | undefined> {
     if (!desktop) {
-      notify("当前是界面预览。请运行 npm run desktop:dev，在桌面应用中登录和启用代理。", true);
+      notify(t("notice.preview"), true);
       return;
     }
     if (busy.value) return;
@@ -224,11 +226,11 @@ export function useWorkspace() {
     }
   }
   async function connect() {
-    return await run("正在登录", async () => {
+    return await run("connect", async () => {
       profile.value.fnId = normalizeFnId(profile.value.fnId);
       profile.value.username = profile.value.username.trim();
-      if (!profile.value.username) throw new Error("请输入 NAS 用户名");
-      if (!password.value && !hasSavedPassword.value) throw new Error("请输入 NAS 密码");
+      if (!profile.value.username) throw new Error(t("validation.username"));
+      if (!password.value && !hasSavedPassword.value) throw new Error(t("validation.password"));
       inventory.value = null;
       connection.value = await invoke<ConnectionInfo>("connect_nas", {
         connectionId: selectedConnectionId.value,
@@ -242,14 +244,14 @@ export function useWorkspace() {
       });
       password.value = "";
       otp.value = "";
-      notify("连接成功");
+      notify(t("notice.connected"));
       await refresh();
       return true;
     });
   }
   async function save() {
-    return await run("正在保存", async () => {
-      if (!formMatchesSession.value) throw new Error("请先使用当前 FN ID 和账号测试连接成功");
+    return await run("save", async () => {
+      if (!formMatchesSession.value) throw new Error(t("validation.testIdentity"));
       await invoke("save_login", {
         connectionId: selectedConnectionId.value,
         profile: { ...profile.value, services: profile.value.services.map((s) => ({ ...s })) },
@@ -258,41 +260,41 @@ export function useWorkspace() {
         ? `${profile.value.fnId.trim().toLowerCase()}\n${profile.value.username.trim()}`
         : "";
       current.value.saved = true;
-      notify("连接已保存");
+      notify(t("notice.saved"));
       return true;
     });
   }
   async function forget() {
-    await run("删除已保存凭据", async () => {
+    await run("forget", async () => {
       await invoke("forget_login", { connectionId: selectedConnectionId.value });
       savedIdentity.value = "";
       profile.value.remember = false;
       profile.value.autoConnect = false;
-      notify("当前连接不再保存密码，其他连接和当前会话不受影响。");
+      notify(t("notice.credentialsRemoved"));
     });
   }
   async function disconnect() {
-    await run("正在断开", async () => {
+    await run("disconnect", async () => {
       await invoke("disconnect_nas", { connectionId: selectedConnectionId.value });
       inventory.value = null;
       await refresh();
-      notify("连接和本地代理已停止。");
+      notify(t("notice.disconnected"));
     });
   }
   async function discover() {
-    await run("读取入口与容器发布端口", async () => {
+    await run("discover", async () => {
       inventory.value = null;
       inventory.value = await invoke<ServiceInventory>("get_service_inventory", {
         connectionId: selectedConnectionId.value,
       });
       await refresh();
-      notify(`已读取 ${discovered.value.length} 个服务`);
+      notify(t("notice.discovered", { count: discovered.value.length }));
       section.value = "services";
     });
   }
   async function addDiscovered(service: DiscoveredService) {
     if (profile.value.services.some((s) => s.nasPort === service.nasPort)) {
-      notify("此服务已添加", true);
+      notify(t("notice.alreadyAdded"), true);
       return;
     }
     showEditor();
@@ -332,7 +334,7 @@ export function useWorkspace() {
       target.profile.services = services;
       return true;
     }
-    const result = await run("保存服务映射", async () => {
+    const result = await run("save-services", async () => {
       const status = await invoke<ProxyStatus>("update_services", {
         connectionId: target.profile.id,
         services: services.map((s) => ({ ...s })),
@@ -345,7 +347,7 @@ export function useWorkspace() {
         return listener ? { ...route, upstream: listener.upstream } : route;
       });
       target.proxy = status;
-      notify("服务映射已保存");
+      notify(t("notice.servicesSaved"));
       return true;
     });
     return result === true;
@@ -353,10 +355,10 @@ export function useWorkspace() {
   async function commitEditor() {
     if (busy.value) return;
     try {
-      if (proxy.value.running && editor.id) throw new Error("请先停止代理再编辑已有映射");
+      if (proxy.value.running && editor.id) throw new Error(t("validation.stopBeforeEdit"));
       validateService(editor, profile.value.fnId);
       if (occupiedPorts(editor.id).includes(editor.localPort))
-        throw new Error("本地端口已被另一个连接或映射使用");
+        throw new Error(t("validation.portOccupied"));
       const route = {
         ...editor,
         id: editor.id || crypto.randomUUID(),
@@ -374,7 +376,7 @@ export function useWorkspace() {
   }
   async function remove(route: ServiceRoute) {
     if (proxy.value.running) {
-      notify("请先停止代理再删除服务", true);
+      notify(t("validation.stopBeforeDelete"), true);
       return;
     }
     await updateServices(profile.value.services.filter((s) => s.id !== route.id));
@@ -389,7 +391,7 @@ export function useWorkspace() {
     );
   }
   async function probe(route: ServiceRoute) {
-    await run("测试服务", async () => {
+    await run("probe", async () => {
       probes.value[route.id] = await invoke<RouteProbe>("probe_service", {
         connectionId: selectedConnectionId.value,
         route,
@@ -401,38 +403,38 @@ export function useWorkspace() {
     });
   }
   async function toggleProxy() {
-    await run(proxy.value.running ? "停止代理" : "启动代理", async () => {
+    await run(proxy.value.running ? "stop-proxy" : "start-proxy", async () => {
       if (proxy.value.running) {
         await invoke("stop_proxy", { connectionId: selectedConnectionId.value });
         await refresh();
-        notify("本地代理已停止。");
+        notify(t("notice.proxyStopped"));
         return;
       }
-      if (!formMatchesSession.value) throw new Error("请先测试当前账号的连接");
+      if (!formMatchesSession.value) throw new Error(t("validation.testAccount"));
       proxy.value = await invoke<ProxyStatus>("start_proxy", {
         connectionId: selectedConnectionId.value,
         services: profile.value.services.map((s) => ({ ...s })),
       });
       await refresh();
-      notify("代理已启动");
+      notify(t("notice.proxyStarted"));
     });
   }
   async function refreshToken() {
-    await run("更新服务凭据", async () => {
+    await run("refresh-token", async () => {
       await invoke("refresh_session", { connectionId: selectedConnectionId.value });
-      notify("服务访问凭据已更新，不需要复制 Cookie。");
+      notify(t("notice.credentialsUpdated"));
     });
   }
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      notify("已复制到剪贴板");
+      notify(t("notice.copied"));
     } catch {
-      notify("复制不可用，请手动选择并复制地址", true);
+      notify(t("notice.copyFailed"), true);
     }
   }
   async function open(port: number) {
-    await run("打开服务", async () => {
+    await run("open-service", async () => {
       await openUrl(localUrl(port));
     });
   }
@@ -463,7 +465,7 @@ export function useWorkspace() {
         });
       }, 2000);
     } catch {
-      notify("读取桌面后端状态失败，请查看应用启动日志", true);
+      notify(t("notice.bootstrapFailed"), true);
     }
   });
   onUnmounted(() => {

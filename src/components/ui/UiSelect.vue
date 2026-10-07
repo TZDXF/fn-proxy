@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import {
   SelectRoot,
   SelectTrigger,
@@ -19,6 +20,7 @@ defineProps<{
   label: string;
 }>();
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
+const { t } = useI18n({ useScope: "global" });
 </script>
 <template>
   <SelectRoot
@@ -27,7 +29,8 @@ const emit = defineEmits<{ "update:modelValue": [value: string] }>();
     @update:model-value="emit('update:modelValue', String($event))"
   >
     <SelectTrigger class="select-trigger" :aria-label="label"
-      ><SelectValue placeholder="选择连接" /><SelectIcon class="select-chevron"
+      ><SelectValue :placeholder="label || t('connection.select')" /><SelectIcon
+        class="select-chevron"
         >⌄</SelectIcon
       ></SelectTrigger
     >

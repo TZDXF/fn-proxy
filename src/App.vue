@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import SettingsPage from "./components/SettingsPage.vue";
 import { Label, TabsRoot, TabsList, TabsTrigger, TabsContent } from "reka-ui";
 import Icon from "./components/Icon.vue";
 import UiButton from "./components/ui/UiButton.vue";
@@ -17,6 +19,7 @@ import {
 } from "./lib/types";
 import { useWorkspace } from "./lib/workspace";
 
+const { t, locale } = useI18n({ useScope: "global" });
 const w = useWorkspace();
 const {
   profile,
@@ -38,13 +41,16 @@ const {
   editing,
   logs,
 } = w;
-const nav = [
-  { id: "overview", name: "首页", icon: "grid" },
-  { id: "connections", name: "连接", icon: "link" },
-  { id: "services", name: "服务映射", icon: "server" },
-  { id: "logs", name: "运行日志", icon: "terminal" },
-];
-const title = computed(() => nav.find((item) => item.id === section.value)?.name ?? "首页");
+const nav = computed(() => [
+  { id: "overview", name: t("nav.overview"), icon: "grid" },
+  { id: "connections", name: t("nav.connections"), icon: "link" },
+  { id: "services", name: t("nav.services"), icon: "server" },
+  { id: "logs", name: t("nav.logs"), icon: "terminal" },
+  { id: "settings", name: t("nav.settings"), icon: "settings" },
+]);
+const title = computed(
+  () => nav.value.find((item) => item.id === section.value)?.name ?? t("nav.overview"),
+);
 const connectedCount = computed(
   () => savedConnections.value.filter((c) => c.connection.connected).length,
 );
@@ -65,7 +71,7 @@ const connectionDialog = ref(false);
 const connectionBackup = ref<Profile | null>(null);
 const serviceTab = ref("manual");
 const deleteTarget = ref<{ kind: "connection" | "service"; id: string; name: string } | null>(null);
-const time = (n: number) => new Date(n).toLocaleString("zh-CN", { hour12: false });
+const time = (n: number) => new Date(n).toLocaleString(locale.value, { hour12: false });
 const cloneProfile = (p: Profile): Profile => ({
   ...p,
   services: p.services.map((s) => ({ ...s })),
@@ -161,7 +167,7 @@ async function confirmDelete() {
         <img class="brand-mark" src="/app-icon.svg" alt="" width="37" height="37" />
         <strong>FN Proxy<span>.</span></strong>
       </div>
-      <TabsList class="navigation" aria-label="主导航">
+      <TabsList class="navigation" :aria-label="t('nav.main')">
         <TabsTrigger
           v-for="item in nav"
           :key="item.id"
@@ -178,7 +184,9 @@ async function confirmDelete() {
       </TabsList>
       <div class="sidebar-footer">
         <span class="status-dot" :class="{ online: connectedCount > 0 }" /><span>{{
-          connectedCount ? `${connectedCount} 个连接在线` : "未连接"
+          connectedCount
+            ? t("status.onlineConnections", { count: connectedCount })
+            : t("common.disconnected")
         }}</span
         ><span class="version">v0.1.0</span>
       </div>
@@ -186,11 +194,13 @@ async function confirmDelete() {
     <div class="main-shell">
       <header class="topbar">
         <div>
-          工作空间 <span class="separator">/</span> <strong>{{ title }}</strong>
+          {{ t("nav.workspace") }} <span class="separator">/</span> <strong>{{ title }}</strong>
         </div>
         <span class="runtime-status"
           ><span class="status-dot" :class="{ online: runningCount > 0 }" />{{
-            runningCount ? `${runningCount} 个代理运行中` : "代理未开启"
+            runningCount
+              ? t("status.runningProxies", { count: runningCount })
+              : t("status.proxyOff")
           }}</span
         >
       </header>
@@ -202,7 +212,7 @@ async function confirmDelete() {
             variant="primary"
             :disabled="!!busy"
             @click="newConnection"
-            ><Icon name="plus" />新增连接</UiButton
+            ><Icon name="plus" />{{ t("common.addConnection") }}</UiButton
           ><UiButton
             v-if="section === 'services'"
             variant="primary"
@@ -210,43 +220,57 @@ async function confirmDelete() {
               !!busy || !savedConnections.some((c) => c.profile.id === selectedConnectionId)
             "
             @click="newService()"
-            ><Icon name="plus" />新增服务</UiButton
+            ><Icon name="plus" />{{ t("common.addService") }}</UiButton
           >
         </div>
         <TabsContent value="overview" class="page-content">
           <div class="stats-grid">
             <div class="stat-card">
-              <span class="stat-icon"><Icon name="link" :size="21" /></span><span>已保存连接</span
-              ><strong>{{ savedConnections.length }}<small>个</small></strong
-              ><span class="stat-detail">{{ connectedCount }} 个在线</span>
+              <span class="stat-icon"><Icon name="link" :size="21" /></span
+              ><span>{{ t("overview.savedConnections") }}</span
+              ><strong
+                >{{ savedConnections.length
+                }}<small v-if="locale === 'zh-CN'">{{ t("overview.countUnit") }}</small></strong
+              ><span class="stat-detail">{{
+                t("overview.online", { count: connectedCount })
+              }}</span>
             </div>
             <div class="stat-card">
-              <span class="stat-icon"><Icon name="server" :size="21" /></span><span>服务数量</span
-              ><strong>{{ serviceCount }}<small>个</small></strong
-              ><span class="stat-detail"
-                >{{
-                  savedConnections.reduce((n, c) => n + c.proxy.listeners.length, 0)
-                }}
-                个监听中</span
-              >
+              <span class="stat-icon"><Icon name="server" :size="21" /></span
+              ><span>{{ t("overview.services") }}</span
+              ><strong
+                >{{ serviceCount
+                }}<small v-if="locale === 'zh-CN'">{{ t("overview.countUnit") }}</small></strong
+              ><span class="stat-detail">{{
+                t("overview.listeners", {
+                  count: savedConnections.reduce((n, c) => n + c.proxy.listeners.length, 0),
+                })
+              }}</span>
             </div>
             <div class="stat-card">
-              <span class="stat-icon"><Icon name="power" :size="21" /></span><span>运行中代理</span
-              ><strong>{{ runningCount }}<small>个</small></strong
-              ><span class="stat-detail">{{ requests.toLocaleString() }} 次请求</span>
+              <span class="stat-icon"><Icon name="power" :size="21" /></span
+              ><span>{{ t("overview.runningProxies") }}</span
+              ><strong
+                >{{ runningCount
+                }}<small v-if="locale === 'zh-CN'">{{ t("overview.countUnit") }}</small></strong
+              ><span class="stat-detail">{{
+                t("overview.requests", { count: requests.toLocaleString(locale) })
+              }}</span>
             </div>
           </div>
           <section class="panel">
             <div class="panel-heading">
-              <h2>连接总览</h2>
+              <h2>{{ t("overview.connectionSummary") }}</h2>
               <UiButton :disabled="!!busy" @click="newConnection"
-                ><Icon name="plus" />新增连接</UiButton
+                ><Icon name="plus" />{{ t("common.addConnection") }}</UiButton
               >
             </div>
             <div v-if="!savedConnections.length" class="empty-state">
               <Icon name="link" :size="36" />
-              <h3>暂无连接</h3>
-              <UiButton variant="primary" @click="newConnection">新增连接</UiButton>
+              <h3>{{ t("overview.noConnections") }}</h3>
+              <UiButton variant="primary" @click="newConnection">{{
+                t("common.addConnection")
+              }}</UiButton>
             </div>
             <div v-for="c in savedConnections" :key="c.profile.id" class="overview-row">
               <div class="connection-avatar"><Icon name="server" :size="22" /></div>
@@ -256,10 +280,11 @@ async function confirmDelete() {
               </div>
               <span class="badge" :class="{ success: c.connection.connected }"
                 ><span class="status-dot" :class="{ online: c.connection.connected }" />{{
-                  c.connection.connected ? "已连接" : "未连接"
+                  c.connection.connected ? t("common.connected") : t("common.disconnected")
                 }}</span
               ><UiButton variant="ghost" :disabled="!!busy" @click="showServices(c.profile.id)"
-                >{{ c.profile.services.length }} 个服务<Icon name="arrow" :size="15" /></UiButton
+                >{{ t("overview.serviceCount", { count: c.profile.services.length })
+                }}<Icon name="arrow" :size="15" /></UiButton
               ><UiButton
                 :variant="c.proxy.running ? 'secondary' : 'primary'"
                 :disabled="
@@ -267,7 +292,7 @@ async function confirmDelete() {
                 "
                 @click="toggleConnectionProxy(c.profile.id)"
                 ><Icon name="power" :size="16" />{{
-                  c.proxy.running ? "停止代理" : "开启代理"
+                  c.proxy.running ? t("actions.stopProxy") : t("actions.startProxy")
                 }}</UiButton
               >
             </div>
@@ -277,24 +302,27 @@ async function confirmDelete() {
           <section class="panel">
             <div class="panel-heading">
               <h2>
-                已保存连接 <span class="count">{{ savedConnections.length }}</span>
+                {{ t("overview.savedConnections") }}
+                <span class="count">{{ savedConnections.length }}</span>
               </h2>
             </div>
             <div v-if="!savedConnections.length" class="empty-state">
               <Icon name="link" :size="36" />
-              <h3>暂无连接</h3>
-              <UiButton variant="primary" @click="newConnection">新增连接</UiButton>
+              <h3>{{ t("overview.noConnections") }}</h3>
+              <UiButton variant="primary" @click="newConnection">{{
+                t("common.addConnection")
+              }}</UiButton>
             </div>
             <div v-else class="table-scroll">
               <table>
                 <thead>
                   <tr>
                     <th>FN ID</th>
-                    <th>账号</th>
-                    <th>连接状态</th>
-                    <th>服务</th>
-                    <th>代理</th>
-                    <th class="align-right">操作</th>
+                    <th>{{ t("connection.account") }}</th>
+                    <th>{{ t("connection.status") }}</th>
+                    <th>{{ t("connection.services") }}</th>
+                    <th>{{ t("connection.proxy") }}</th>
+                    <th class="align-right">{{ t("actions.operations") }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -306,7 +334,7 @@ async function confirmDelete() {
                     <td>
                       <span class="badge" :class="{ success: c.connection.connected }"
                         ><span class="status-dot" :class="{ online: c.connection.connected }" />{{
-                          c.connection.connected ? "已连接" : "未连接"
+                          c.connection.connected ? t("common.connected") : t("common.disconnected")
                         }}</span
                       >
                     </td>
@@ -320,7 +348,7 @@ async function confirmDelete() {
                     </td>
                     <td>
                       <span :class="['badge', { success: c.proxy.running }]">{{
-                        c.proxy.running ? "运行中" : "已停止"
+                        c.proxy.running ? t("common.running") : t("common.stopped")
                       }}</span>
                     </td>
                     <td>
@@ -329,7 +357,9 @@ async function confirmDelete() {
                           variant="ghost"
                           :disabled="!!busy"
                           @click="editConnection(c.profile.id)"
-                          >{{ c.connection.connected ? "编辑" : "连接" }}</UiButton
+                          >{{
+                            c.connection.connected ? t("common.edit") : t("nav.connections")
+                          }}</UiButton
                         ><UiButton
                           v-if="c.connection.connected"
                           variant="ghost"
@@ -338,11 +368,11 @@ async function confirmDelete() {
                             selectConnection(c.profile.id);
                             w.disconnect();
                           "
-                          >断开</UiButton
+                          >{{ t("common.disconnect") }}</UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy"
-                          :aria-label="`删除连接 ${c.profile.fnId}`"
+                          :aria-label="t('actions.deleteConnection', { name: c.profile.fnId })"
                           @click="
                             deleteTarget = {
                               kind: 'connection',
@@ -366,44 +396,48 @@ async function confirmDelete() {
               v-model="selectedConnectionId"
               :options="connectionOptions"
               :disabled="!!busy"
-              label="当前连接"
+              :label="t('connection.current')"
             /><span :class="['badge', { success: proxy.running }]">{{
-              proxy.running ? "代理运行中" : "代理已停止"
+              proxy.running ? t("status.proxyRunning") : t("status.proxyStopped")
             }}</span
             ><UiButton
               :disabled="!!busy || (!proxy.running && !profile.services.some((s) => s.enabled))"
               @click="toggleConnectionProxy(selectedConnectionId)"
-              ><Icon name="power" />{{ proxy.running ? "停止代理" : "开启代理" }}</UiButton
+              ><Icon name="power" />{{
+                proxy.running ? t("actions.stopProxy") : t("actions.startProxy")
+              }}</UiButton
             >
           </div>
           <section class="panel">
             <div class="panel-heading">
               <h2>
-                已添加服务 <span class="count">{{ profile.services.length }}</span>
+                {{ t("service.added") }} <span class="count">{{ profile.services.length }}</span>
               </h2>
               <span class="muted">{{ profile.fnId }}</span>
             </div>
             <div v-if="!profile.services.length" class="empty-state">
               <Icon name="server" :size="36" />
-              <h3>暂无服务映射</h3>
+              <h3>{{ t("service.empty") }}</h3>
               <UiButton
                 v-if="savedConnections.length"
                 variant="primary"
                 :disabled="!!busy"
                 @click="newService()"
-                >新增服务</UiButton
-              ><UiButton v-else variant="primary" @click="newConnection">新增连接</UiButton>
+                >{{ t("common.addService") }}</UiButton
+              ><UiButton v-else variant="primary" @click="newConnection">{{
+                t("common.addConnection")
+              }}</UiButton>
             </div>
             <div v-else class="table-scroll">
               <table>
                 <thead>
                   <tr>
-                    <th>服务名称</th>
-                    <th>远程地址</th>
-                    <th>本地地址</th>
-                    <th>状态</th>
-                    <th>启用</th>
-                    <th class="align-right">操作</th>
+                    <th>{{ t("service.name") }}</th>
+                    <th>{{ t("service.upstream") }}</th>
+                    <th>{{ t("service.local") }}</th>
+                    <th>{{ t("service.status") }}</th>
+                    <th>{{ t("service.enabled") }}</th>
+                    <th class="align-right">{{ t("actions.operations") }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -420,7 +454,7 @@ async function confirmDelete() {
                         <code>{{ w.localUrl(route.localPort) }}</code
                         ><UiButton
                           variant="ghost"
-                          :aria-label="`复制 ${route.name} 本地地址`"
+                          :aria-label="t('actions.copyLocal', { name: route.name })"
                           @click="w.copy(w.localUrl(route.localPort))"
                           ><Icon name="copy" :size="15"
                         /></UiButton>
@@ -432,18 +466,20 @@ async function confirmDelete() {
                           proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
                         "
                         class="badge success"
-                        >监听中</span
+                        >{{ t("status.listening") }}</span
                       ><span
                         v-else-if="probes[route.id]"
                         :class="['badge', probes[route.id]?.reachable ? 'success' : 'error']"
                         >HTTP {{ probes[route.id]?.status }}</span
-                      ><span v-else class="badge">{{ route.enabled ? "待启动" : "未启用" }}</span>
+                      ><span v-else class="badge">{{
+                        route.enabled ? t("status.pending") : t("status.disabled")
+                      }}</span>
                     </td>
                     <td>
                       <UiSwitch
                         :model-value="route.enabled"
                         :disabled="!!busy || proxy.running"
-                        :label="`启用 ${route.name}`"
+                        :label="t('actions.enable', { name: route.name })"
                         @update:model-value="w.setServiceEnabled(route, $event)"
                       />
                     </td>
@@ -452,7 +488,7 @@ async function confirmDelete() {
                         <UiButton
                           variant="ghost"
                           :disabled="!!busy || !connection.connected"
-                          :aria-label="`测试 ${route.name}`"
+                          :aria-label="t('actions.test', { name: route.name })"
                           @click="w.probe(route)"
                           ><Icon name="refresh" :size="16" /></UiButton
                         ><UiButton
@@ -461,19 +497,19 @@ async function confirmDelete() {
                             !!busy ||
                             !proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
                           "
-                          :aria-label="`打开 ${route.name}`"
+                          :aria-label="t('actions.open', { name: route.name })"
                           @click="w.open(route.localPort)"
                           ><Icon name="external" :size="16" /></UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy || proxy.running"
-                          :aria-label="`编辑 ${route.name}`"
+                          :aria-label="t('actions.edit', { name: route.name })"
                           @click="newService(route)"
                           ><Icon name="edit" :size="16" /></UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy || proxy.running"
-                          :aria-label="`删除 ${route.name}`"
+                          :aria-label="t('actions.delete', { name: route.name })"
                           @click="
                             deleteTarget = { kind: 'service', id: route.id, name: route.name }
                           "
@@ -491,13 +527,15 @@ async function confirmDelete() {
           ><section class="panel">
             <div class="panel-heading">
               <h2>
-                运行日志 <span class="count">{{ logs.length }}</span>
+                {{ t("nav.logs") }} <span class="count">{{ logs.length }}</span>
               </h2>
-              <UiButton :disabled="!logs.length" @click="logs = []">清空</UiButton>
+              <UiButton :disabled="!logs.length" @click="logs = []">{{
+                t("common.clear")
+              }}</UiButton>
             </div>
             <div v-if="!logs.length" class="empty-state">
               <Icon name="terminal" :size="36" />
-              <h3>暂无日志</h3>
+              <h3>{{ t("logs.empty") }}</h3>
             </div>
             <div v-else class="log-list">
               <div
@@ -507,20 +545,26 @@ async function confirmDelete() {
               >
                 <time>{{ time(entry.time) }}</time
                 ><span :class="['log-level', entry.level]">{{
-                  { info: "信息", success: "成功", warn: "警告", error: "错误" }[entry.level]
+                  {
+                    info: t("logs.info"),
+                    success: t("logs.success"),
+                    warn: t("logs.warn"),
+                    error: t("logs.error"),
+                  }[entry.level]
                 }}</span
                 ><span>{{ entry.message }}</span>
               </div>
             </div>
           </section></TabsContent
         >
+        <TabsContent value="settings" class="page-content"><SettingsPage /></TabsContent>
       </main>
     </div>
   </TabsRoot>
 
   <UiDialog
     v-model="connectionDialog"
-    :title="connectionBackup ? '编辑连接' : '新增连接'"
+    :title="connectionBackup ? t('connection.edit') : t('common.addConnection')"
     :busy="!!busy"
     :notice="notice"
   >
@@ -538,7 +582,7 @@ async function confirmDelete() {
           />
         </div>
         <div class="field">
-          <Label for="username">用户名</Label
+          <Label for="username">{{ t("connection.username") }}</Label
           ><UiInput
             id="username"
             v-model="profile.username"
@@ -549,25 +593,25 @@ async function confirmDelete() {
         </div>
       </div>
       <div class="field">
-        <Label for="password">密码</Label>
+        <Label for="password">{{ t("connection.password") }}</Label>
         <div class="password-input">
           <UiInput
             id="password"
             v-model="password"
             :type="showPassword ? 'text' : 'password'"
-            :placeholder="hasSavedPassword ? '已保存密码' : ''"
+            :placeholder="hasSavedPassword ? t('connection.savedPassword') : ''"
             autocomplete="current-password"
             :disabled="!!busy || proxy.running"
           /><UiButton
             variant="ghost"
-            :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+            :aria-label="showPassword ? t('connection.hidePassword') : t('connection.showPassword')"
             @click="showPassword = !showPassword"
             ><Icon name="eye"
           /></UiButton>
         </div>
       </div>
       <div class="field">
-        <Label for="otp">两步验证码</Label
+        <Label for="otp">{{ t("connection.otp") }}</Label
         ><UiInput
           id="otp"
           v-model="otp"
@@ -577,22 +621,22 @@ async function confirmDelete() {
         />
       </div>
       <div class="setting-row">
-        <Label for="remember">保存密码</Label
+        <Label for="remember">{{ t("connection.remember") }}</Label
         ><UiSwitch
           id="remember"
           v-model="profile.remember"
           :disabled="!!busy"
-          label="保存密码"
+          :label="t('connection.remember')"
           @update:model-value="!$event && (profile.autoConnect = false)"
         />
       </div>
       <div class="dialog-footer">
-        <span v-if="connection.connected" class="badge success">已连接</span
+        <span v-if="connection.connected" class="badge success">{{ t("common.connected") }}</span
         ><UiButton :disabled="!!busy || proxy.running" @click="w.connect()">{{
-          busy === "正在登录" ? "连接中…" : "测试连接"
+          busy === "connect" ? t("connection.connecting") : t("connection.test")
         }}</UiButton
         ><UiButton variant="primary" type="submit" :disabled="!!busy">{{
-          busy === "正在保存" ? "保存中…" : "保存连接"
+          busy === "save" ? t("common.saving") : t("connection.save")
         }}</UiButton>
       </div>
     </form>
@@ -600,24 +644,24 @@ async function confirmDelete() {
 
   <UiDialog
     v-model="editing"
-    :title="editor.id ? '编辑服务映射' : '新增服务映射'"
+    :title="editor.id ? t('service.editMapping') : t('service.newMapping')"
     :busy="!!busy"
     :notice="notice"
     wide
   >
     <TabsRoot v-model="serviceTab"
-      ><TabsList v-if="!editor.id" class="dialog-tabs" aria-label="添加服务方式"
-        ><TabsTrigger value="manual">手动添加</TabsTrigger
-        ><TabsTrigger value="discovery">服务发现</TabsTrigger></TabsList
+      ><TabsList v-if="!editor.id" class="dialog-tabs" :aria-label="t('service.addMethod')"
+        ><TabsTrigger value="manual">{{ t("service.manual") }}</TabsTrigger
+        ><TabsTrigger value="discovery">{{ t("service.discovery") }}</TabsTrigger></TabsList
       >
       <TabsContent value="manual"
         ><form @submit.prevent="w.commitEditor()">
           <div class="field">
-            <Label for="service-name">服务名称</Label
+            <Label for="service-name">{{ t("service.name") }}</Label
             ><UiInput id="service-name" v-model="editor.name" required :disabled="!!busy" />
           </div>
           <div class="field">
-            <Label for="upstream">远程地址</Label
+            <Label for="upstream">{{ t("service.upstream") }}</Label
             ><UiInput
               id="upstream"
               v-model="editor.upstream"
@@ -629,7 +673,7 @@ async function confirmDelete() {
           </div>
           <div class="form-grid">
             <div class="field">
-              <Label for="nas-port">NAS 端口</Label
+              <Label for="nas-port">{{ t("service.nasPort") }}</Label
               ><UiInput
                 id="nas-port"
                 v-model="editor.nasPort"
@@ -639,13 +683,10 @@ async function confirmDelete() {
                 required
                 :disabled="!!busy"
               />
-              <span class="field-hint"
-                >固定使用 NAS 端口匹配服务；远程域名变化时自动更新，本地端口不变。Docker
-                请填写宿主机发布端口。</span
-              >
+              <span class="field-hint">{{ t("service.portBindingHint") }}</span>
             </div>
             <div class="field">
-              <Label for="local-port">本地端口</Label
+              <Label for="local-port">{{ t("service.localPort") }}</Label
               ><UiInput
                 id="local-port"
                 v-model="editor.localPort"
@@ -658,18 +699,18 @@ async function confirmDelete() {
             </div>
           </div>
           <div class="setting-row">
-            <Label for="service-enabled">启用服务</Label
+            <Label for="service-enabled">{{ t("service.enable") }}</Label
             ><UiSwitch
               id="service-enabled"
               v-model="editor.enabled"
               :disabled="!!busy"
-              label="启用服务"
+              :label="t('service.enable')"
             />
           </div>
           <div class="dialog-footer">
-            <UiButton :disabled="!!busy" @click="editing = false">取消</UiButton
+            <UiButton :disabled="!!busy" @click="editing = false">{{ t("common.cancel") }}</UiButton
             ><UiButton type="submit" variant="primary" :disabled="!!busy">{{
-              busy ? "保存中…" : "保存服务"
+              busy ? t("common.saving") : t("service.save")
             }}</UiButton>
           </div>
         </form></TabsContent
@@ -678,12 +719,12 @@ async function confirmDelete() {
         ><div class="discovery-toolbar">
           <strong>{{ profile.fnId }}</strong
           ><UiButton :disabled="!!busy || !connection.connected" @click="w.discover()"
-            ><Icon name="refresh" />{{ busy ? "读取中…" : "读取服务" }}</UiButton
+            ><Icon name="refresh" />{{ busy ? t("common.reading") : t("service.read") }}</UiButton
           >
         </div>
         <div v-if="!inventory" class="empty-state compact">
           <Icon name="server" :size="30" />
-          <h3>{{ connection.connected ? "尚未读取服务" : "未连接 NAS" }}</h3>
+          <h3>{{ connection.connected ? t("service.notRead") : t("service.noNas") }}</h3>
         </div>
         <template v-else
           ><div class="source-status">
@@ -693,7 +734,7 @@ async function confirmDelete() {
               :class="['badge', source.status === 'ok' ? 'success' : 'error']"
               :title="source.message"
               >{{ source.name }} ·
-              {{ source.status === "ok" ? (source.count ?? 0) : "不可用" }}</span
+              {{ source.status === "ok" ? (source.count ?? 0) : t("common.unavailable") }}</span
             >
           </div>
           <div class="discovered-list">
@@ -706,14 +747,18 @@ async function confirmDelete() {
                 :disabled="profile.services.some((s) => s.nasPort === service.nasPort)"
                 @click="chooseService(service)"
                 >{{
-                  profile.services.some((s) => s.nasPort === service.nasPort) ? "已添加" : "选择"
+                  profile.services.some((s) => s.nasPort === service.nasPort)
+                    ? t("common.added")
+                    : t("common.select")
                 }}</UiButton
               >
             </div>
-            <div v-if="!discovered.length" class="empty-state compact"><h3>暂无可添加服务</h3></div>
+            <div v-if="!discovered.length" class="empty-state compact">
+              <h3>{{ t("service.noAvailable") }}</h3>
+            </div>
           </div>
           <template v-if="inventory.docker"
-            ><h3 class="subsection-title">Docker 端口</h3>
+            ><h3 class="subsection-title">{{ t("service.dockerPorts") }}</h3>
             <div class="discovered-list">
               <div v-for="row in inventory.docker.rows" :key="row.id" class="discovered-row">
                 <div>
@@ -730,7 +775,9 @@ async function confirmDelete() {
                   "
                   @click="chooseService(dockerPortService(row))"
                   >{{
-                    profile.services.some((s) => s.nasPort === row.nasPort) ? "已添加" : "选择"
+                    profile.services.some((s) => s.nasPort === row.nasPort)
+                      ? t("common.added")
+                      : t("common.select")
                   }}</UiButton
                 >
               </div>
@@ -742,14 +789,16 @@ async function confirmDelete() {
   </UiDialog>
   <UiDialog
     :model-value="!!deleteTarget"
-    title="确认删除"
+    :title="t('dialog.confirmDelete')"
     :busy="!!busy"
     :notice="notice"
     @update:model-value="!$event && (deleteTarget = null)"
     ><div class="delete-name">{{ deleteTarget?.name }}</div>
     <div class="dialog-footer">
-      <UiButton :disabled="!!busy" @click="deleteTarget = null">取消</UiButton
-      ><UiButton variant="danger" :disabled="!!busy" @click="confirmDelete">删除</UiButton>
+      <UiButton :disabled="!!busy" @click="deleteTarget = null">{{ t("common.cancel") }}</UiButton
+      ><UiButton variant="danger" :disabled="!!busy" @click="confirmDelete">{{
+        t("common.delete")
+      }}</UiButton>
     </div></UiDialog
   >
   <div
@@ -758,7 +807,7 @@ async function confirmDelete() {
     :role="notice.error ? 'alert' : 'status'"
   >
     <Icon :name="notice.error ? 'info' : 'check'" /><span>{{ notice.message }}</span
-    ><UiButton variant="ghost" aria-label="关闭通知" @click="notice = null"
+    ><UiButton variant="ghost" :aria-label="t('common.closeNotice')" @click="notice = null"
       ><Icon name="close" :size="16"
     /></UiButton>
   </div>

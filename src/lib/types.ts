@@ -1,3 +1,5 @@
+import { i18n } from "./i18n";
+
 export interface ServiceRoute {
   id: string;
   name: string;
@@ -122,21 +124,21 @@ export interface RouteProbe {
 export function normalizeFnId(input: string): string {
   const id = input.trim().toLowerCase();
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(id) || id.includes("--")) {
-    throw new Error("FN ID 仅支持字母、数字和单个连字符");
+    throw new Error(i18n.global.t("validation.fnId"));
   }
   return id;
 }
 export function validateService(route: ServiceRoute, fnId: string): void {
-  if (!route.name.trim()) throw new Error("请输入服务名称");
+  if (!route.name.trim()) throw new Error(i18n.global.t("validation.serviceName"));
   for (const port of [route.nasPort, route.localPort]) {
     if (!Number.isInteger(port) || port < 1 || port > 65535)
-      throw new Error("端口需为 1–65535 的整数");
+      throw new Error(i18n.global.t("validation.port"));
   }
   let url: URL;
   try {
     url = new URL(route.upstream);
   } catch {
-    throw new Error("请输入完整的 HTTPS 服务地址");
+    throw new Error(i18n.global.t("validation.https"));
   }
   if (
     url.protocol !== "https:" ||
@@ -148,18 +150,18 @@ export function validateService(route: ServiceRoute, fnId: string): void {
     (url.port && url.port !== "443") ||
     url.pathname !== "/"
   ) {
-    throw new Error("服务地址必须是当前 NAS 的 FN Connect 子域名根地址，且不含凭据或查询参数");
+    throw new Error(i18n.global.t("validation.upstream"));
   }
 }
 export function suggestedLocalPort(nasPort: number, occupied: number[] = []): number {
   if (!Number.isInteger(nasPort) || nasPort < 1 || nasPort > 65535)
-    throw new Error("端口需为 1–65535 的整数");
+    throw new Error(i18n.global.t("validation.port"));
   const used = new Set(occupied);
   for (let offset = 0; offset < 65535; offset += 1) {
     const port = ((nasPort - 1 + offset) % 65535) + 1;
     if (!used.has(port)) return port;
   }
-  throw new Error("没有可建议的本地端口");
+  throw new Error(i18n.global.t("validation.noPort"));
 }
 export function localUrl(port: number): string {
   return `http://127.0.0.1:${port}/`;
@@ -173,7 +175,7 @@ export function dockerPortService(row: DockerPortRow): DiscoveredService {
     !row.upstream ||
     !row.fnDomain
   ) {
-    throw new Error("该记录尚未取得明确的 TCP 端口与远程域名关联，不能创建代理映射");
+    throw new Error(i18n.global.t("validation.dockerMapping"));
   }
   return {
     id: row.id,
@@ -181,16 +183,16 @@ export function dockerPortService(row: DockerPortRow): DiscoveredService {
     nasPort: row.nasPort,
     upstream: row.upstream,
     fnDomain: row.fnDomain,
-    source: "Docker 容器端口与快捷访问映射关联",
+    source: i18n.global.t("docker.source"),
   };
 }
 export function dockerPortStatus(status: DockerPortRow["status"]): string {
   return {
-    mapped: "已注册，待测试",
-    "no-domain": "未匹配到域名",
-    "registry-unavailable": "映射来源未知",
-    "not-published": "无宿主机端口",
-    "unsupported-protocol": "协议不支持",
-    ambiguous: "关联存在歧义",
+    mapped: i18n.global.t("docker.mapped"),
+    "no-domain": i18n.global.t("docker.noDomain"),
+    "registry-unavailable": i18n.global.t("docker.registryUnavailable"),
+    "not-published": i18n.global.t("docker.notPublished"),
+    "unsupported-protocol": i18n.global.t("docker.unsupportedProtocol"),
+    ambiguous: i18n.global.t("docker.ambiguous"),
   }[status];
 }

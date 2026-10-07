@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useI18n } from "vue-i18n";
 import { watch } from "vue";
 import {
   DialogRoot,
@@ -32,6 +33,7 @@ function closeFocus(event: Event) {
 function preventWhileBusy(event: Event) {
   if (props.busy) event.preventDefault();
 }
+const { t } = useI18n({ useScope: "global" });
 </script>
 <template>
   <DialogRoot :open="modelValue" @update:open="!busy && emit('update:modelValue', $event)">
@@ -46,7 +48,7 @@ function preventWhileBusy(event: Event) {
       >
         <div class="dialog-heading">
           <DialogTitle>{{ title }}</DialogTitle
-          ><DialogClose class="icon-button" :disabled="busy" aria-label="关闭弹窗"
+          ><DialogClose class="icon-button" :disabled="busy" :aria-label="t('common.closeDialog')"
             ><Icon name="close"
           /></DialogClose>
         </div>
