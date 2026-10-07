@@ -441,22 +441,11 @@ async fn bridge(
     };
     tokio::select! {_=to_remote=>{},_=to_local=>{},_=cancel.cancelled()=>{}}
 }
-// Keep existing listeners untouched when adding routes to a running proxy.
+// Reserve only ports that are not already owned by this proxy.
 pub fn additional_routes(
     routes: &[ServiceRoute],
     listeners: &[ListenerInfo],
 ) -> Result<Vec<ServiceRoute>> {
-    for listener in listeners {
-        if !routes.iter().any(|route| {
-            route.enabled
-                && listener.local_url == format!("http://127.0.0.1:{}/", route.local_port)
-                && listener.upstream == route.upstream
-                && listener.nas_port == route.nas_port
-                && listener.name == route.name
-        }) {
-            return Err(error("proxy.stopBeforeEditRoutes"));
-        }
-    }
     Ok(routes
         .iter()
         .filter(|route| {
@@ -542,6 +531,56 @@ pub async fn start(
         });
     }
     Ok(handles)
+}
+// Prepare new listeners before persisting, then reuse existing ports and release removed ones.
+// A bind, validation or storage failure leaves the old configuration and traffic intact.
+pub async fn apply_routes(
+    handles: &mut Vec<ProxyHandle>,
+    routes: &[ServiceRoute],
+    fn_id: &str,
+    hub: SessionHub,
+    counter: Arc<AtomicU64>,
+    allow_lan_access: bool,
+    before_apply: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    validate_routes(routes, fn_id)?;
+    let targets = routes
+        .iter()
+        .filter(|route| route.enabled)
+        .map(|route| Ok((route, validate_upstream(&route.upstream, fn_id)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let listeners = handles
+        .iter()
+        .map(|handle| handle.info.clone())
+        .collect::<Vec<_>>();
+    let additions = additional_routes(routes, &listeners)?;
+    let new_handles = if additions.is_empty() {
+        vec![]
+    } else {
+        start(&additions, fn_id, hub, counter, allow_lan_access).await?
+    };
+    if let Err(error) = before_apply() {
+        stop(new_handles).await;
+        return Err(error);
+    }
+    let mut removed = Vec::new();
+    for mut handle in std::mem::take(handles) {
+        if let Some((route, upstream)) = targets.iter().find(|(route, _)| {
+            handle.info.local_url == format!("http://127.0.0.1:{}/", route.local_port)
+        }) {
+            *handle.upstream.write().unwrap() = upstream.clone();
+            handle.route_id = route.id.clone();
+            handle.info.name = route.name.clone();
+            handle.info.nas_port = route.nas_port;
+            handle.info.upstream = route.upstream.clone();
+            handles.push(handle);
+        } else {
+            removed.push(handle);
+        }
+    }
+    handles.extend(new_handles);
+    stop(removed).await;
+    Ok(())
 }
 // Domain refresh changes only the target of future requests, never the listener or open WebSockets.
 pub fn update_upstreams(

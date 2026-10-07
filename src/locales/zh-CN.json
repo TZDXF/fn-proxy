@@ -176,9 +176,7 @@
     "username": "请输入 NAS 用户名",
     "password": "请输入 NAS 密码",
     "testIdentity": "请先使用当前 FN ID 和账号测试连接成功",
-    "stopBeforeEdit": "请先停止代理再编辑已有映射",
     "portOccupied": "本地端口已被另一个连接或映射使用",
-    "stopBeforeDelete": "请先停止代理再删除服务",
     "testAccount": "请先测试当前账号的连接",
     "fnId": "FN ID 仅支持字母、数字和单个连字符",
     "serviceName": "请输入服务名称",
@@ -353,7 +351,6 @@
     "proxy": {
       "sessionUnavailable": "NAS 尚未登录或认证连接已失效",
       "credentialHeaderInvalid": "服务访问凭据无效",
-      "stopBeforeEditRoutes": "请先停止代理再编辑或删除已有映射",
       "noServiceEnabled": "至少启用一个服务映射",
       "listenFailed": "无法监听本地端口 {port}：{detail}；请选择其他端口",
       "routesChangedDuringSync": "域名同步时服务映射已变化，拒绝更新运行中的代理"

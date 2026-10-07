@@ -821,6 +821,7 @@ pub async fn update_services(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
     mut services: Vec<ServiceRoute>,
+    edited_service_id: Option<String>,
 ) -> Result<ProxyStatus> {
     let manager = state.inner().clone();
     let _workspace_guard = manager.operation.lock().await;
@@ -843,8 +844,11 @@ pub async fn update_services(
     let running = !listeners.is_empty();
     if running {
         // IPC may carry a domain snapshot from before the last background refresh.
-        // Keep the live cache for existing fixed-port routes; other edits still fail below.
+        // Keep the live cache for untouched routes, but honor explicit editor changes.
         for route in &mut services {
+            if edited_service_id.as_deref() == Some(&route.id) {
+                continue;
+            }
             if let Some(current) = profile.services.iter().find(|current| {
                 current.id == route.id
                     && current.nas_port == route.nas_port
@@ -876,33 +880,34 @@ pub async fn update_services(
             }
         }
     }
-    let handles = if additions.is_empty() {
-        vec![]
-    } else {
-        if state.session.read().await.is_none() {
-            return Err(error("workspace.reconnectRequired"));
+    if !additions.is_empty() && state.session.read().await.is_none() {
+        return Err(error("workspace.reconnectRequired"));
+    }
+    profile.services = services;
+    let saved = *state.saved.lock().unwrap();
+    let persist = || {
+        if saved {
+            manager.persist(Some(&profile), None)?;
         }
-        proxy::start(
-            &additions,
+        Ok(())
+    };
+    let mut proxies = state.proxies.lock().await;
+    if running {
+        proxy::apply_routes(
+            &mut proxies,
+            &profile.services,
             &fn_id,
             state.session.clone(),
             state.counter.clone(),
             manager.allow_lan_access.load(Ordering::Relaxed),
+            persist,
         )
-        .await?
-    };
-    profile.services = services;
-    // If saving fails, release only the new listeners; existing traffic remains untouched.
-    let saved = *state.saved.lock().unwrap();
-    if saved {
-        if let Err(e) = manager.persist(Some(&profile), None) {
-            proxy::stop(handles).await;
-            return Err(e);
-        }
+        .await?;
+    } else {
+        persist()?;
     }
     *state.profile.lock().unwrap() = profile;
-    let mut proxies = state.proxies.lock().await;
-    proxies.extend(handles);
+    let running = !proxies.is_empty();
     let listeners = proxies.iter().map(|h| h.info.clone()).collect();
     state.log(&app, "success", Text::new("logs.servicesUpdated"));
     Ok(ProxyStatus {

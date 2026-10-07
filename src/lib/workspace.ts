@@ -384,7 +384,10 @@ export function useWorkspace() {
     suggestedEditorPort = editor.localPort;
     editing.value = true;
   }
-  async function updateServices(services: ServiceRoute[]): Promise<boolean> {
+  async function updateServices(
+    services: ServiceRoute[],
+    editedServiceId?: string,
+  ): Promise<boolean> {
     const target = current.value;
     if (!desktop) {
       target.profile.services = services;
@@ -394,6 +397,7 @@ export function useWorkspace() {
       const status = await invoke<ProxyStatus>("update_services", {
         connectionId: target.profile.id,
         services: services.map((s) => ({ ...s })),
+        ...(editedServiceId ? { editedServiceId } : {}),
       });
       target.profile.services = services.map((route) => {
         const listener = status.listeners.find(
@@ -411,7 +415,6 @@ export function useWorkspace() {
   async function commitEditor() {
     if (busy.value) return;
     try {
-      if (proxy.value.running && editor.id) throw new Error(t("validation.stopBeforeEdit"));
       validateService(editor, profile.value.fnId);
       if (occupiedPorts(editor.id).includes(editor.localPort))
         throw new Error(t("validation.portOccupied"));
@@ -425,20 +428,15 @@ export function useWorkspace() {
       const index = services.findIndex((s) => s.id === editor.id);
       if (index < 0) services.push(route);
       else services[index] = route;
-      if (await updateServices(services)) editing.value = false;
+      if (await updateServices(services, editor.id || undefined)) editing.value = false;
     } catch (error) {
       notify(localizeError(error), true);
     }
   }
   async function remove(route: ServiceRoute) {
-    if (proxy.value.running) {
-      notify(t("validation.stopBeforeDelete"), true);
-      return;
-    }
     await updateServices(profile.value.services.filter((s) => s.id !== route.id));
   }
   async function setServiceEnabled(route: ServiceRoute, enabled: boolean) {
-    if (proxy.value.running) return;
     await updateServices(
       profile.value.services.map((s) => ({
         ...s,

@@ -176,9 +176,7 @@
     "username": "Enter your NAS username",
     "password": "Enter your NAS password",
     "testIdentity": "Test the connection with the current FN ID and account first",
-    "stopBeforeEdit": "Stop the proxy before editing an existing mapping",
     "portOccupied": "This local port is already used by another connection or mapping",
-    "stopBeforeDelete": "Stop the proxy before deleting a service",
     "testAccount": "Test the connection for this account first",
     "fnId": "FN ID only supports letters, digits, and single hyphens",
     "serviceName": "Enter a service name",
@@ -353,7 +351,6 @@
     "proxy": {
       "sessionUnavailable": "The NAS is not signed in or the authentication connection has expired.",
       "credentialHeaderInvalid": "The service access credential is invalid.",
-      "stopBeforeEditRoutes": "Stop the proxy before editing or deleting existing mappings.",
       "noServiceEnabled": "Enable at least one service mapping.",
       "listenFailed": "Cannot listen on local port {port}: {detail}. Choose another port.",
       "routesChangedDuringSync": "Service mappings changed during domain sync; refusing to update running proxies."

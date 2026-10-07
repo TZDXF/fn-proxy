@@ -492,7 +492,7 @@ async function confirmDelete() {
                     <td>
                       <UiSwitch
                         :model-value="route.enabled"
-                        :disabled="!!busy || proxy.running"
+                        :disabled="!!busy"
                         :label="t('actions.enable', { name: route.name })"
                         @update:model-value="w.setServiceEnabled(route, $event)"
                       />
@@ -516,13 +516,13 @@ async function confirmDelete() {
                           ><Icon name="external" :size="16" /></UiButton
                         ><UiButton
                           variant="ghost"
-                          :disabled="!!busy || proxy.running"
+                          :disabled="!!busy"
                           :aria-label="t('actions.edit', { name: route.name })"
                           @click="newService(route)"
                           ><Icon name="edit" :size="16" /></UiButton
                         ><UiButton
                           variant="ghost"
-                          :disabled="!!busy || proxy.running"
+                          :disabled="!!busy"
                           :aria-label="t('actions.delete', { name: route.name })"
                           @click="
                             deleteTarget = { kind: 'service', id: route.id, name: route.name }

@@ -407,7 +407,7 @@ async fn incremental_port_conflict_keeps_old_listener_alive_and_releases_new_por
 }
 
 #[test]
-fn running_routes_cannot_be_removed_changed_or_disabled() {
+fn running_route_updates_only_reserve_new_local_ports() {
     let original = route(18084);
     let listener = ListenerInfo {
         name: original.name.clone(),
@@ -421,7 +421,7 @@ fn running_routes_cannot_be_removed_changed_or_disabled() {
             .unwrap()
             .is_empty()
     );
-    assert!(additional_routes(&[], &listeners).is_err());
+    assert!(additional_routes(&[], &listeners).unwrap().is_empty());
     for changed in [
         ServiceRoute {
             enabled: false,
@@ -441,10 +441,19 @@ fn running_routes_cannot_be_removed_changed_or_disabled() {
         },
         ServiceRoute {
             nas_port: 9090,
-            ..original
+            ..original.clone()
         },
     ] {
-        assert!(additional_routes(&[changed], &listeners).is_err());
+        let expected = if changed.enabled && changed.local_port != original.local_port {
+            vec![changed.clone()]
+        } else {
+            vec![]
+        };
+        let additions = additional_routes(&[changed], &listeners).unwrap();
+        assert_eq!(additions.len(), expected.len());
+        if let Some(next) = additions.first() {
+            assert_eq!(next.local_port, expected[0].local_port);
+        }
     }
 }
 
@@ -733,5 +742,222 @@ async fn domain_update_is_validated_and_transactional_before_touching_live_targe
     assert_eq!(handles[0].upstream.read().unwrap().as_str(), next.upstream);
     assert_eq!(handles[0].info.local_url, "http://127.0.0.1:18084/");
     assert!(!cancel.is_cancelled());
+    stop(handles).await;
+}
+
+#[tokio::test]
+async fn live_edits_reuse_listener_and_update_all_forwarding_metadata() {
+    let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
+    let hub = Arc::new(RwLock::new(None));
+    let counter = Arc::new(AtomicU64::new(42));
+    let mut handles = start(
+        &[route(port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    let upstream = handles[0].upstream.clone();
+    let cancel = handles[0].cancel.clone();
+    let task_id = handles[0].task.id();
+    let next = ServiceRoute {
+        name: "renamed".into(),
+        nas_port: 9090,
+        upstream: "https://new.my-nas.fnos.net/".into(),
+        ..route(port)
+    };
+    apply_routes(
+        &mut handles,
+        std::slice::from_ref(&next),
+        "my-nas",
+        hub,
+        counter.clone(),
+        false,
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].task.id(), task_id);
+    assert!(Arc::ptr_eq(&handles[0].upstream, &upstream));
+    assert!(!cancel.is_cancelled());
+    assert_eq!(upstream.read().unwrap().as_str(), next.upstream);
+    assert_eq!(handles[0].info.name, next.name);
+    assert_eq!(handles[0].info.nas_port, next.nas_port);
+    assert_eq!(handles[0].info.upstream, next.upstream);
+    assert_eq!(counter.load(Ordering::Relaxed), 42);
+    assert!(TcpListener::bind(("127.0.0.1", port)).await.is_err());
+    stop(handles).await;
+}
+
+#[tokio::test]
+async fn live_port_changes_and_deletions_release_only_replaced_listeners() {
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let third = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_port = first.local_addr().unwrap().port();
+    let second_port = second.local_addr().unwrap().port();
+    let third_port = third.local_addr().unwrap().port();
+    drop((first, second, third));
+    let hub = Arc::new(RwLock::new(None));
+    let counter = Arc::new(AtomicU64::new(42));
+    let mut handles = start(
+        &[route(first_port), route(second_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    let first_cancel = handles[0].cancel.clone();
+    let second_cancel = handles[1].cancel.clone();
+    let second_task = handles[1].task.id();
+    let moved = ServiceRoute {
+        local_port: third_port,
+        ..route(first_port)
+    };
+    apply_routes(
+        &mut handles,
+        &[moved, route(second_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    assert!(first_cancel.is_cancelled());
+    assert!(!second_cancel.is_cancelled());
+    assert_eq!(handles[0].task.id(), second_task);
+    assert!(TcpListener::bind(("127.0.0.1", first_port)).await.is_ok());
+    assert!(TcpListener::bind(("127.0.0.1", third_port)).await.is_err());
+    apply_routes(
+        &mut handles,
+        &[route(second_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].task.id(), second_task);
+    assert!(TcpListener::bind(("127.0.0.1", third_port)).await.is_ok());
+    let disabled = ServiceRoute {
+        enabled: false,
+        ..route(second_port)
+    };
+    apply_routes(
+        &mut handles,
+        &[disabled],
+        "my-nas",
+        hub,
+        counter.clone(),
+        false,
+        || Ok(()),
+    )
+    .await
+    .unwrap();
+    assert!(handles.is_empty());
+    assert!(second_cancel.is_cancelled());
+    assert_eq!(counter.load(Ordering::Relaxed), 42);
+    assert!(TcpListener::bind(("127.0.0.1", second_port)).await.is_ok());
+}
+
+#[tokio::test]
+async fn live_update_failures_preserve_old_listener_and_release_prepared_ports() {
+    let old = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let new = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let old_port = old.local_addr().unwrap().port();
+    let new_port = new.local_addr().unwrap().port();
+    let occupied_port = occupied.local_addr().unwrap().port();
+    drop((old, new));
+    let hub = Arc::new(RwLock::new(None));
+    let counter = Arc::new(AtomicU64::new(42));
+    let mut handles = start(
+        &[route(old_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+    )
+    .await
+    .unwrap();
+    let task_id = handles[0].task.id();
+    let changed = ServiceRoute {
+        name: "changed".into(),
+        upstream: "https://new.my-nas.fnos.net/".into(),
+        ..route(old_port)
+    };
+    assert!(apply_routes(
+        &mut handles,
+        &[changed.clone(), route(new_port), route(occupied_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+        || panic!("must bind before persisting")
+    )
+    .await
+    .is_err());
+    assert!(TcpListener::bind(("127.0.0.1", new_port)).await.is_ok());
+    assert!(apply_routes(
+        &mut handles,
+        &[changed.clone(), route(new_port)],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+        || Err(error("storage failed"))
+    )
+    .await
+    .is_err());
+    assert!(TcpListener::bind(("127.0.0.1", new_port)).await.is_ok());
+    assert!(apply_routes(
+        &mut handles,
+        &[],
+        "my-nas",
+        hub.clone(),
+        counter.clone(),
+        false,
+        || Err(error("storage failed"))
+    )
+    .await
+    .is_err());
+    let unsafe_route = ServiceRoute {
+        upstream: "https://127.0.0.1/".into(),
+        ..changed
+    };
+    assert!(apply_routes(
+        &mut handles,
+        &[unsafe_route],
+        "my-nas",
+        hub,
+        counter.clone(),
+        false,
+        || panic!("must validate before persisting")
+    )
+    .await
+    .is_err());
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].task.id(), task_id);
+    assert_eq!(handles[0].info.name, route(old_port).name);
+    assert_eq!(handles[0].info.upstream, route(old_port).upstream);
+    assert_eq!(
+        handles[0].upstream.read().unwrap().as_str(),
+        route(old_port).upstream
+    );
+    assert!(!handles[0].cancel.is_cancelled());
+    assert_eq!(counter.load(Ordering::Relaxed), 42);
+    assert!(TcpListener::bind(("127.0.0.1", old_port)).await.is_err());
     stop(handles).await;
 }

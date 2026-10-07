@@ -571,7 +571,13 @@ describe("saved connections and incremental service mappings", () => {
     expect(w.profile.value.fnId).toBe("");
     expect(w.savedConnections.value).toHaveLength(0);
   });
-  it("does not allow editing, removing or disabling an existing running mapping", async () => {
+  it.each([
+    { name: "Renamed" },
+    { nasPort: 9090 },
+    { localPort: 19090 },
+    { upstream: "https://new.my-nas.fnos.net/" },
+    { enabled: false },
+  ])("applies edits to an existing running mapping: %j", async (changes) => {
     mocks.desktop = true;
     const w = useWorkspace();
     const route = {
@@ -585,13 +591,86 @@ describe("saved connections and incremental service mappings", () => {
     w.profile.value.fnId = "my-nas";
     w.profile.value.services = [route];
     w.proxy.value = { running: true, listeners: [], requests: 4 };
+    mocks.invoke.mockImplementation(async (_command, { services }) => ({
+      running: services.some((s: typeof route) => s.enabled),
+      listeners: services
+        .filter((s: typeof route) => s.enabled)
+        .map((s: typeof route) => ({
+          name: s.name,
+          nasPort: s.nasPort,
+          localUrl: `http://127.0.0.1:${s.localPort}/`,
+          upstream: s.upstream,
+        })),
+      requests: 4,
+    }));
     w.showEditor(route);
+    Object.assign(w.editor, changes);
     await w.commitEditor();
-    await w.remove(route);
-    await w.setServiceEnabled(route, false);
-    expect(w.profile.value.services).toEqual([route]);
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(w.profile.value.services).toEqual([{ ...route, ...changes }]);
+    expect(w.proxy.value.running).toBe(changes.enabled !== false);
+    expect(w.proxy.value.requests).toBe(4);
+    expect(w.editing.value).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("update_services", {
+      connectionId: w.selectedConnectionId.value,
+      services: [{ ...route, ...changes }],
+      editedServiceId: route.id,
+    });
   });
+  it.each(["remove", "disable"])(
+    "allows %s while running and stops the final listener",
+    async (action) => {
+      mocks.desktop = true;
+      const w = useWorkspace();
+      const route = { ...service(), localPort: 8084, enabled: true };
+      w.profile.value.fnId = "my-nas";
+      w.profile.value.services = [route];
+      w.proxy.value = { running: true, listeners: [], requests: 4 };
+      mocks.invoke.mockResolvedValue({ running: false, listeners: [], requests: 4 });
+      if (action === "remove") await w.remove(route);
+      else await w.setServiceEnabled(route, false);
+      const services = action === "remove" ? [] : [{ ...route, enabled: false }];
+      expect(w.profile.value.services).toEqual(services);
+      expect(w.proxy.value).toEqual({ running: false, listeners: [], requests: 4 });
+      expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("update_services", {
+        connectionId: w.selectedConnectionId.value,
+        services,
+      });
+    },
+  );
+  it.each(["edit", "remove", "disable"])(
+    "preserves an existing running mapping when %s fails",
+    async (action) => {
+      mocks.desktop = true;
+      const w = useWorkspace();
+      const route = { ...service(), localPort: 8084, enabled: true };
+      const status = {
+        running: true,
+        listeners: [
+          {
+            name: route.name,
+            nasPort: route.nasPort,
+            localUrl: "http://127.0.0.1:8084/",
+            upstream: route.upstream,
+          },
+        ],
+        requests: 4,
+      };
+      w.profile.value.fnId = "my-nas";
+      w.profile.value.services = [route];
+      w.proxy.value = status;
+      mocks.invoke.mockRejectedValue(new Error("保存失败"));
+      if (action === "edit") {
+        w.showEditor(route);
+        w.editor.localPort = 18084;
+        await w.commitEditor();
+        expect(w.editing.value).toBe(true);
+      } else if (action === "remove") await w.remove(route);
+      else await w.setServiceEnabled(route, false);
+      expect(w.profile.value.services).toEqual([route]);
+      expect(w.proxy.value).toEqual(status);
+      expect(w.notice.value?.error).toBe(true);
+    },
+  );
 });
 
 describe("LAN access settings", () => {

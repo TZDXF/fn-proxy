@@ -90,3 +90,17 @@ describe("theme scrollbars", () => {
     expect(css.match(/scrollbar-color:/g)).toHaveLength(1);
   });
 });
+
+describe("live service controls", () => {
+  it("does not disable service editing, deletion or toggles while the proxy runs", () => {
+    const app = readFileSync(new URL("../App.vue", import.meta.url), "utf8");
+    const table = app.slice(
+      app.indexOf(':model-value="route.enabled"'),
+      app.indexOf("</table>", app.indexOf(':model-value="route.enabled"')),
+    );
+    expect(table).toContain("w.setServiceEnabled");
+    expect(table).toContain("newService(route)");
+    expect(table).toContain("kind: 'service'");
+    expect(table).not.toMatch(/:disabled="[^"]*proxy\.running/);
+  });
+});
