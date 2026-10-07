@@ -586,15 +586,6 @@ async function confirmDelete() {
           @update:model-value="!$event && (profile.autoConnect = false)"
         />
       </div>
-      <div class="setting-row">
-        <Label for="auto-connect">启动时自动连接</Label
-        ><UiSwitch
-          id="auto-connect"
-          v-model="profile.autoConnect"
-          :disabled="!!busy || !profile.remember"
-          label="启动时自动连接"
-        />
-      </div>
       <div class="dialog-footer">
         <span v-if="connection.connected" class="badge success">已连接</span
         ><UiButton :disabled="!!busy || proxy.running" @click="w.connect()">{{
