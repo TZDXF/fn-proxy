@@ -1,0 +1,7 @@
+# Normalize all text files to LF in the repository and working tree.
+* text=auto eol=lf
+
+# Keep native icon assets binary.
+*.png binary
+*.ico binary
+*.icns binary
