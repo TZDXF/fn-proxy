@@ -604,6 +604,11 @@ td strong {
   gap: 8px;
   margin-bottom: 18px;
 }
+.field-hint {
+  color: #83908c;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .field > label {
   font-size: 12px;
   font-weight: 550;

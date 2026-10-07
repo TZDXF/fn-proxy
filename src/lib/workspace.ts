@@ -211,6 +211,15 @@ export function useWorkspace() {
       if (target) {
         target.connection = item.connection;
         target.proxy = item.proxy;
+        // Only accept domain cache changes for the same route and fixed NAS port.
+        // Do not overwrite unsaved names, enabled flags, ports or connection form edits.
+        for (const route of target.profile.services) {
+          const synced = item.services?.find(
+            (service) => service.id === route.id && service.nasPort === route.nasPort,
+          );
+          if (synced && target.profile.fnId === item.connection.fnId)
+            route.upstream = synced.upstream;
+        }
       }
     }
   }
@@ -276,12 +285,13 @@ export function useWorkspace() {
       inventory.value = await invoke<ServiceInventory>("get_service_inventory", {
         connectionId: selectedConnectionId.value,
       });
+      await refresh();
       notify(`已读取 ${discovered.value.length} 个服务`);
       section.value = "services";
     });
   }
   async function addDiscovered(service: DiscoveredService) {
-    if (profile.value.services.some((s) => s.upstream === service.upstream)) {
+    if (profile.value.services.some((s) => s.nasPort === service.nasPort)) {
       notify("此服务已添加", true);
       return;
     }
@@ -327,7 +337,13 @@ export function useWorkspace() {
         connectionId: target.profile.id,
         services: services.map((s) => ({ ...s })),
       });
-      target.profile.services = services;
+      target.profile.services = services.map((route) => {
+        const listener = status.listeners.find(
+          (listener) =>
+            listener.nasPort === route.nasPort && listener.localUrl === localUrl(route.localPort),
+        );
+        return listener ? { ...route, upstream: listener.upstream } : route;
+      });
       target.proxy = status;
       notify("服务映射已保存");
       return true;
@@ -397,6 +413,7 @@ export function useWorkspace() {
         connectionId: selectedConnectionId.value,
         services: profile.value.services.map((s) => ({ ...s })),
       });
+      await refresh();
       notify("代理已启动");
     });
   }

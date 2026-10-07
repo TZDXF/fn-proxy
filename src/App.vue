@@ -639,6 +639,10 @@ async function confirmDelete() {
                 required
                 :disabled="!!busy"
               />
+              <span class="field-hint"
+                >固定使用 NAS 端口匹配服务；远程域名变化时自动更新，本地端口不变。Docker
+                请填写宿主机发布端口。</span
+              >
             </div>
             <div class="field">
               <Label for="local-port">本地端口</Label
@@ -699,10 +703,10 @@ async function confirmDelete() {
                 ><span class="cell-sub">:{{ service.nasPort }} · {{ service.upstream }}</span>
               </div>
               <UiButton
-                :disabled="profile.services.some((s) => s.upstream === service.upstream)"
+                :disabled="profile.services.some((s) => s.nasPort === service.nasPort)"
                 @click="chooseService(service)"
                 >{{
-                  profile.services.some((s) => s.upstream === service.upstream) ? "已添加" : "选择"
+                  profile.services.some((s) => s.nasPort === service.nasPort) ? "已添加" : "选择"
                 }}</UiButton
               >
             </div>
@@ -722,11 +726,11 @@ async function confirmDelete() {
                 <UiButton
                   :disabled="
                     row.status !== 'mapped' ||
-                    profile.services.some((s) => s.upstream === row.upstream)
+                    profile.services.some((s) => s.nasPort === row.nasPort)
                   "
                   @click="chooseService(dockerPortService(row))"
                   >{{
-                    profile.services.some((s) => s.upstream === row.upstream) ? "已添加" : "选择"
+                    profile.services.some((s) => s.nasPort === row.nasPort) ? "已添加" : "选择"
                   }}</UiButton
                 >
               </div>

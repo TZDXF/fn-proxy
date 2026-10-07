@@ -257,7 +257,7 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     assert!(!exported.contains("env"));
     assert_eq!(inventory.sources[2].status, "ok");
 
-    let services = session.discover().await.unwrap();
+    let services = session.domain_inventory().await.unwrap().services;
     assert_eq!(services[0].nas_port, 8084);
     assert_eq!(services[0].fn_domain, "fixture-0");
     session.refresh_entry_token().await.unwrap();

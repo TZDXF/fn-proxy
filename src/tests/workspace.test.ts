@@ -320,3 +320,119 @@ describe("saved connections and incremental service mappings", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 });
+
+describe("fixed NAS port domain cache", () => {
+  it("refreshes domains from snapshots without overwriting local settings or another NAS", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.desktop = true;
+      const route = {
+        id: "fixed",
+        name: "Custom",
+        nasPort: 8084,
+        localPort: 18084,
+        upstream: "https://old.my-nas.fnos.net/",
+        enabled: false,
+      };
+      let snapshotServices = [{ ...route }];
+      let snapshotFnId = "my-nas";
+      mocks.invoke.mockImplementation(async (command: string) => {
+        if (command === "get_bootstrap")
+          return {
+            profiles: [
+              {
+                profile: {
+                  ...profile("first", "my-nas"),
+                  services: [route],
+                },
+                hasSavedPassword: true,
+              },
+            ],
+          };
+        if (command === "get_logs") return [];
+        if (command === "get_snapshot")
+          return {
+            connections: [
+              {
+                id: "first",
+                connection: info(snapshotFnId),
+                services: snapshotServices,
+                proxy: { running: false, listeners: [], requests: 0 },
+              },
+            ],
+          };
+      });
+      const w = useWorkspace();
+      await mocks.mounted[0]!();
+      w.password.value = "unsaved password";
+      w.profile.value.services[0]!.name = "Unsaved name";
+      w.profile.value.services[0]!.localPort = 19000;
+      snapshotServices = [{ ...route, upstream: "https://new.my-nas.fnos.net/", enabled: true }];
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(w.profile.value.services[0]).toEqual({
+        ...route,
+        name: "Unsaved name",
+        localPort: 19000,
+        upstream: "https://new.my-nas.fnos.net/",
+      });
+      expect(w.password.value).toBe("unsaved password");
+      // A response for a different fixed port must not replace this route's cache.
+      snapshotServices = [{ ...route, nasPort: 9000, upstream: "https://wrong.my-nas.fnos.net/" }];
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(w.profile.value.services[0]!.upstream).toBe("https://new.my-nas.fnos.net/");
+      snapshotFnId = "other-nas";
+      snapshotServices = [{ ...route, upstream: "https://new.other-nas.fnos.net/" }];
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(w.profile.value.services[0]!.upstream).toBe("https://new.my-nas.fnos.net/");
+    } finally {
+      mocks.unmounted.forEach((callback) => callback());
+      vi.useRealTimers();
+    }
+  });
+  it("does not add a duplicate fixed NAS port when the discovered domain changes", async () => {
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    await w.addDiscovered(service());
+    await w.addDiscovered({ ...service(), upstream: "https://changed.my-nas.fnos.net/" });
+    expect(w.profile.value.services).toHaveLength(1);
+    expect(w.profile.value.services[0]!.nasPort).toBe(8084);
+    expect(w.notice.value?.error).toBe(true);
+  });
+  it("accepts the authoritative live domain returned while adding another mapping", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    const existing = {
+      id: "fixed",
+      name: "API",
+      nasPort: 8084,
+      localPort: 18084,
+      upstream: "https://old.my-nas.fnos.net/",
+      enabled: true,
+    };
+    w.profile.value.services = [existing];
+    w.proxy.value = { running: true, listeners: [], requests: 7 };
+    mocks.invoke.mockResolvedValue({
+      running: true,
+      requests: 7,
+      listeners: [
+        {
+          name: "API",
+          nasPort: 8084,
+          localUrl: "http://127.0.0.1:18084/",
+          upstream: "https://new.my-nas.fnos.net/",
+        },
+      ],
+    });
+    w.showEditor();
+    Object.assign(w.editor, {
+      name: "Added",
+      nasPort: 9000,
+      localPort: 19000,
+      upstream: "https://added.my-nas.fnos.net/",
+    });
+    await w.commitEditor();
+    expect(w.profile.value.services[0]!.upstream).toBe("https://new.my-nas.fnos.net/");
+    expect(w.profile.value.services[0]!.localPort).toBe(18084);
+  });
+});

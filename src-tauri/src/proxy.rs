@@ -17,7 +17,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, RwLock as StdRwLock,
 };
 use tokio::{net::TcpListener, sync::RwLock, task::JoinHandle};
 use tokio_tungstenite::{
@@ -27,16 +27,19 @@ use tokio_tungstenite::{
 use tokio_util::sync::CancellationToken;
 
 pub type SessionHub = Arc<RwLock<Option<Arc<NasSession>>>>;
+pub type UpstreamHub = Arc<StdRwLock<url::Url>>;
 #[derive(Clone)]
 pub struct ProxyContext {
     pub session: SessionHub,
-    pub upstream: url::Url,
+    pub upstream: UpstreamHub,
     pub local_port: u16,
     pub requests: Arc<AtomicU64>,
     pub cancel: CancellationToken,
     pub http: reqwest::Client,
 }
 pub struct ProxyHandle {
+    pub route_id: String,
+    pub upstream: UpstreamHub,
     pub info: ListenerInfo,
     pub cancel: CancellationToken,
     pub task: JoinHandle<()>,
@@ -151,7 +154,11 @@ fn rewrite_cookie(value: &str) -> Option<String> {
     }
     Some(result.join("; "))
 }
-async fn target_headers(ctx: &ProxyContext, headers: &HeaderMap) -> Result<HeaderMap> {
+async fn target_headers(
+    ctx: &ProxyContext,
+    upstream: &url::Url,
+    headers: &HeaderMap,
+) -> Result<HeaderMap> {
     let session = ctx
         .session
         .read()
@@ -175,7 +182,7 @@ async fn target_headers(ctx: &ProxyContext, headers: &HeaderMap) -> Result<Heade
     if outgoing.contains_key(header::ORIGIN) {
         outgoing.insert(
             header::ORIGIN,
-            HeaderValue::from_str(&ctx.upstream.origin().ascii_serialization()).unwrap(),
+            HeaderValue::from_str(&upstream.origin().ascii_serialization()).unwrap(),
         );
     }
     if let Some(referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()) {
@@ -185,7 +192,7 @@ async fn target_headers(ctx: &ProxyContext, headers: &HeaderMap) -> Result<Heade
                     header::REFERER,
                     HeaderValue::from_str(&format!(
                         "{}{}",
-                        ctx.upstream.origin().ascii_serialization(),
+                        upstream.origin().ascii_serialization(),
                         url.path()
                     ))
                     .unwrap(),
@@ -207,10 +214,12 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
             "仅允许本机访问；已阻止跨站或异常 Host 请求",
         );
     }
-    let mut target = ctx.upstream.clone();
+    // Use one address snapshot for URL, headers and redirects throughout this request.
+    let upstream = ctx.upstream.read().unwrap().clone();
+    let mut target = upstream.clone();
     target.set_path(request.uri().path());
     target.set_query(request.uri().query());
-    let headers = match target_headers(&ctx, request.headers()).await {
+    let headers = match target_headers(&ctx, &upstream, request.headers()).await {
         Ok(v) => v,
         Err(_) => {
             return fail(
@@ -233,7 +242,7 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
         };
         request = Request::from_parts(parts, body);
         target
-            .set_scheme(if ctx.upstream.scheme() == "https" {
+            .set_scheme(if upstream.scheme() == "https" {
                 "wss"
             } else {
                 "ws"
@@ -299,7 +308,7 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
         .and_then(|v| v.to_str().ok())
     {
         if let Ok(value) =
-            HeaderValue::from_str(&rewrite_location(location, &ctx.upstream, ctx.local_port))
+            HeaderValue::from_str(&rewrite_location(location, &upstream, ctx.local_port))
         {
             forwarded.insert(header::LOCATION, value);
         }
@@ -412,9 +421,10 @@ pub async fn start(
     let mut handles = Vec::new();
     for (route, listener) in routes.into_iter().zip(reserved) {
         let cancel = CancellationToken::new();
+        let upstream = Arc::new(StdRwLock::new(validate_upstream(&route.upstream, fn_id)?));
         let ctx = ProxyContext {
             session: hub.clone(),
-            upstream: validate_upstream(&route.upstream, fn_id)?,
+            upstream: upstream.clone(),
             local_port: route.local_port,
             requests: counter.clone(),
             cancel: cancel.clone(),
@@ -428,6 +438,8 @@ pub async fn start(
                 .await;
         });
         handles.push(ProxyHandle {
+            route_id: route.id.clone(),
+            upstream,
             info: ListenerInfo {
                 name: route.name.clone(),
                 local_url: format!("http://127.0.0.1:{}/", route.local_port),
@@ -439,6 +451,39 @@ pub async fn start(
         });
     }
     Ok(handles)
+}
+// Domain refresh changes only the target of future requests, never the listener or open WebSockets.
+pub fn update_upstreams(
+    handles: &mut [ProxyHandle],
+    routes: &[ServiceRoute],
+    fn_id: &str,
+    before_apply: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    // Validate every target before changing any live listener.
+    let updates: Vec<_> = handles
+        .iter()
+        .map(|handle| {
+            let route = routes
+                .iter()
+                .find(|route| {
+                    route.id == handle.route_id
+                        && route.nas_port == handle.info.nas_port
+                        && handle.info.local_url
+                            == format!("http://127.0.0.1:{}/", route.local_port)
+                })
+                .ok_or_else(|| error("域名同步时服务映射已变化，拒绝更新运行中的代理"))?;
+            Ok((
+                route.upstream.clone(),
+                validate_upstream(&route.upstream, fn_id)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    before_apply()?;
+    for (handle, (address, url)) in handles.iter_mut().zip(updates) {
+        *handle.upstream.write().unwrap() = url;
+        handle.info.upstream = address;
+    }
+    Ok(())
 }
 pub async fn stop(handles: Vec<ProxyHandle>) {
     for handle in &handles {

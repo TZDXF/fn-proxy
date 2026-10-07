@@ -38,6 +38,7 @@ export interface AppSnapshot {
 }
 export interface ConnectionSnapshot {
   id: string;
+  services: ServiceRoute[];
   connection: ConnectionInfo;
   proxy: ProxyStatus;
 }

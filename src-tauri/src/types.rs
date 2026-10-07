@@ -165,6 +165,7 @@ pub struct AppSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSnapshot {
     pub id: String,
+    pub services: Vec<ServiceRoute>,
     pub connection: ConnectionInfo,
     pub proxy: ProxyStatus,
 }

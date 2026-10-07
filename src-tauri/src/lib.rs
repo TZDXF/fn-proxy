@@ -5,6 +5,7 @@ mod error;
 mod inventory;
 mod proxy;
 mod resolver;
+mod service_sync;
 mod storage;
 mod types;
 use std::sync::Arc;

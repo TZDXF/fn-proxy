@@ -2,7 +2,7 @@ use crate::{
     auth::NasSession,
     error::{error, Result},
     proxy::{self, ProxyHandle, SessionHub},
-    resolver, storage,
+    resolver, service_sync, storage,
     types::*,
 };
 use std::{
@@ -37,6 +37,7 @@ pub struct ConnectionState {
     pub operation: Mutex<()>,
     credentials: Mutex<Option<Credentials>>,
     monitor: Mutex<Option<CancellationToken>>,
+    domain_warning: StdMutex<String>,
     logs: Arc<StdMutex<VecDeque<LogEntry>>>,
 }
 impl ConnectionState {
@@ -52,6 +53,7 @@ impl ConnectionState {
             operation: Mutex::new(()),
             credentials: Mutex::new(None),
             monitor: Mutex::new(None),
+            domain_warning: StdMutex::new(String::new()),
             logs,
         }
     }
@@ -181,6 +183,83 @@ async fn stop_internal(state: &ConnectionState) {
     let handles = std::mem::take(&mut *state.proxies.lock().await);
     proxy::stop(handles).await;
 }
+// Call while holding workspace and connection operation locks, in that order.
+async fn apply_domain_inventory(
+    app: &AppHandle,
+    manager: &AppState,
+    state: &ConnectionState,
+    session: &Arc<NasSession>,
+    inventory: &ServiceInventory,
+) -> Result<()> {
+    if !state
+        .session
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, session))
+    {
+        return Ok(()); // The discovery belongs to a disconnected/replaced session.
+    }
+    let mut profile = state.profile();
+    if profile.services.is_empty()
+        || (!profile.fn_id.is_empty() && profile.fn_id != session.info.fn_id)
+    {
+        return Ok(());
+    }
+    let result = service_sync::reconcile(&profile.services, inventory, &session.info.fn_id);
+    report_domain_warnings(app, state, &result.warnings);
+    if result.changed == 0 {
+        return Ok(());
+    }
+    profile.services = result.routes;
+    validate_routes(&profile.services, &session.info.fn_id)?;
+    // Validate targets, persist, then commit synchronously. Cancellation/save errors cannot
+    // leave the stored profile, runtime targets and in-memory cache at different versions.
+    let mut proxies = state.proxies.lock().await;
+    proxy::update_upstreams(&mut proxies, &profile.services, &session.info.fn_id, || {
+        if *state.saved.lock().unwrap() {
+            manager.persist(Some(&profile), None)
+        } else {
+            Ok(())
+        }
+    })?;
+    *state.profile.lock().unwrap() = profile;
+    state.log(
+        app,
+        "info",
+        format!(
+            "已按固定 NAS 端口更新 {} 个服务的远程域名，本地端口保持不变",
+            result.changed
+        ),
+    );
+    Ok(())
+}
+fn report_domain_warnings(app: &AppHandle, state: &ConnectionState, warnings: &[String]) {
+    let warning = warnings.join("；");
+    let changed = {
+        let mut previous = state.domain_warning.lock().unwrap();
+        let changed = *previous != warning;
+        *previous = warning.clone();
+        changed
+    };
+    if changed && !warning.is_empty() {
+        state.log(app, "warn", warning);
+    }
+}
+async fn refresh_domains(
+    app: &AppHandle,
+    manager: &AppState,
+    state: &ConnectionState,
+    session: &Arc<NasSession>,
+) -> Result<()> {
+    if state.profile().services.is_empty() {
+        return Ok(());
+    }
+    let inventory = session.domain_inventory().await?;
+    let _workspace_guard = manager.operation.lock().await;
+    let _guard = state.operation.lock().await;
+    apply_domain_inventory(app, manager, state, session, &inventory).await
+}
 async fn establish(
     app: &AppHandle,
     state: &Arc<ConnectionState>,
@@ -254,7 +333,17 @@ async fn establish(
 async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current: Arc<NasSession>) {
     let cancel = CancellationToken::new();
     *state.monitor.lock().await = Some(cancel.clone());
+    let manager = app.state::<Arc<AppState>>().inner().clone();
     tauri::async_runtime::spawn(async move {
+        let initial = tokio::select! { _=cancel.cancelled()=>return, result=refresh_domains(&app, &manager, &state, &current)=>result };
+        if initial.is_err() {
+            report_domain_warnings(
+                &app,
+                &state,
+                &["服务域名读取失败，保留已有地址，稍后重试".to_owned()],
+            );
+        }
+        let mut domains_refreshed = tokio::time::Instant::now();
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         tick.tick().await;
         let mut refreshed = tokio::time::Instant::now();
@@ -265,6 +354,17 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
                 tokio::select! {_=cancel.cancelled()=>break,result=rpc.heartbeat()=>result}
             };
             if alive.is_ok() {
+                if domains_refreshed.elapsed() >= Duration::from_secs(60) {
+                    let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
+                    if updated.is_err() {
+                        report_domain_warnings(
+                            &app,
+                            &state,
+                            &["服务域名同步失败，保留已有地址，稍后重试".to_owned()],
+                        );
+                    }
+                    domains_refreshed = tokio::time::Instant::now();
+                }
                 if refreshed.elapsed() >= Duration::from_secs(15 * 60) {
                     let updated = tokio::select! {_=cancel.cancelled()=>break,result=current.refresh_entry_token()=>result};
                     if updated.is_ok() {
@@ -308,6 +408,16 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current:
                         "认证连接已恢复，现有本地监听继续使用新凭据",
                     );
                     refreshed = tokio::time::Instant::now();
+                    drop(_guard);
+                    let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
+                    if updated.is_err() {
+                        report_domain_warnings(
+                            &app,
+                            &state,
+                            &["重连后服务域名同步失败，保留已有地址，稍后重试".to_owned()],
+                        );
+                    }
+                    domains_refreshed = tokio::time::Instant::now();
                 }
                 Err(e) => {
                     *state.session.write().await = None;
@@ -355,6 +465,7 @@ pub async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot
         connections.push(ConnectionSnapshot {
             id: state.id.clone(),
             connection: state.info.read().unwrap().clone(),
+            services: state.profile().services,
             proxy: ProxyStatus {
                 running: !listeners.is_empty(),
                 listeners,
@@ -495,6 +606,7 @@ pub async fn forget_login(
 }
 #[tauri::command]
 pub async fn discover_services(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     connection_id: String,
 ) -> Result<Vec<DiscoveredService>> {
@@ -507,10 +619,15 @@ pub async fn discover_services(
         .await
         .clone()
         .ok_or_else(|| error("请先登录 NAS"))?;
-    session.discover().await
+    let inventory = session.inventory().await?;
+    let _workspace_guard = manager.operation.lock().await;
+    let _guard = state.operation.lock().await;
+    apply_domain_inventory(&app, &manager, &state, &session, &inventory).await?;
+    Ok(inventory.services)
 }
 #[tauri::command]
 pub async fn get_service_inventory(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     connection_id: String,
 ) -> Result<crate::types::ServiceInventory> {
@@ -523,7 +640,11 @@ pub async fn get_service_inventory(
         .await
         .clone()
         .ok_or_else(|| error("请先登录 NAS"))?;
-    session.inventory().await
+    let inventory = session.inventory().await?;
+    let _workspace_guard = manager.operation.lock().await;
+    let _guard = state.operation.lock().await;
+    apply_domain_inventory(&app, &manager, &state, &session, &inventory).await?;
+    Ok(inventory)
 }
 #[tauri::command]
 pub async fn probe_service(
@@ -588,7 +709,7 @@ pub async fn start_proxy(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     connection_id: String,
-    services: Vec<ServiceRoute>,
+    mut services: Vec<ServiceRoute>,
 ) -> Result<ProxyStatus> {
     let manager = state.inner().clone();
     let _workspace_guard = manager.operation.lock().await;
@@ -603,6 +724,19 @@ pub async fn start_proxy(
         .ok_or_else(|| error("请先测试连接并登录 NAS"))?;
     if !state.proxies.lock().await.is_empty() {
         return Err(error("请先停止代理，再修改服务映射"));
+    }
+    validate_routes(&services, &session.info.fn_id)?;
+    match session.domain_inventory().await {
+        Ok(inventory) => {
+            let result = service_sync::reconcile(&services, &inventory, &session.info.fn_id);
+            report_domain_warnings(&app, &state, &result.warnings);
+            services = result.routes;
+        }
+        Err(_) => report_domain_warnings(
+            &app,
+            &state,
+            &["启动前服务域名读取失败，使用已有地址，稍后重试".to_owned()],
+        ),
     }
     for other in manager.all().into_iter().filter(|c| c.id != state.id) {
         let proxies = other.proxies.lock().await;
@@ -626,6 +760,15 @@ pub async fn start_proxy(
         state.counter.clone(),
     )
     .await?;
+    let mut profile = state.profile();
+    profile.services = services;
+    if *state.saved.lock().unwrap() {
+        if let Err(e) = manager.persist(Some(&profile), None) {
+            proxy::stop(handles).await;
+            return Err(e);
+        }
+    }
+    *state.profile.lock().unwrap() = profile;
     let listeners = handles.iter().map(|h| h.info.clone()).collect();
     *state.proxies.lock().await = handles;
     state.log(
@@ -644,7 +787,7 @@ pub async fn update_services(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     connection_id: String,
-    services: Vec<ServiceRoute>,
+    mut services: Vec<ServiceRoute>,
 ) -> Result<ProxyStatus> {
     let manager = state.inner().clone();
     let _workspace_guard = manager.operation.lock().await;
@@ -665,6 +808,22 @@ pub async fn update_services(
         .map(|h| h.info.clone())
         .collect();
     let running = !listeners.is_empty();
+    if running {
+        // IPC may carry a domain snapshot from before the last background refresh.
+        // Keep the live cache for existing fixed-port routes; other edits still fail below.
+        for route in &mut services {
+            if let Some(current) = profile.services.iter().find(|current| {
+                current.id == route.id
+                    && current.nas_port == route.nas_port
+                    && current.local_port == route.local_port
+                    && listeners.iter().any(|listener| {
+                        listener.local_url == format!("http://127.0.0.1:{}/", route.local_port)
+                    })
+            }) {
+                route.upstream = current.upstream.clone();
+            }
+        }
+    }
     let additions = if running {
         proxy::additional_routes(&services, &listeners)?
     } else {

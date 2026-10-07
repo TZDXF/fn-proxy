@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 struct Fixture {
     local: url::Url,
     hub: SessionHub,
+    upstream: UpstreamHub,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -86,9 +87,10 @@ async fn fixture() -> Fixture {
     let port = local_listener.local_addr().unwrap().port();
     let hub = Arc::new(RwLock::new(Some(session)));
     let cancel = CancellationToken::new();
+    let upstream = Arc::new(StdRwLock::new(upstream));
     let ctx = ProxyContext {
         session: hub.clone(),
-        upstream,
+        upstream: upstream.clone(),
         local_port: port,
         requests: Arc::new(AtomicU64::new(0)),
         cancel: cancel.clone(),
@@ -109,6 +111,7 @@ async fn fixture() -> Fixture {
     Fixture {
         local: url::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
         hub,
+        upstream,
         cancel,
         tasks: vec![authentication, service_task, proxy_task],
     }
@@ -458,4 +461,147 @@ async fn adding_a_listener_does_not_interrupt_an_existing_websocket() {
     assert!(!f.cancel.is_cancelled());
     socket.close(None).await.unwrap();
     stop(added).await;
+}
+
+#[tokio::test]
+async fn live_domain_switch_preserves_listener_old_websocket_and_request_headers() {
+    let mut f = fixture().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let before = client
+        .get(f.local.join("echo").unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(before.status(), 201);
+    let mut ws_url = f.local.join("ws").unwrap();
+    ws_url.set_scheme("ws").unwrap();
+    let (mut old_socket, _) = connect_async(ws_url.as_str()).await.unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let next = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let next_origin = next.origin().ascii_serialization();
+    let redirect = next.join("echo?new=1").unwrap().to_string();
+    let app = Router::new()
+        .route("/echo", any(echo))
+        .route("/ws", any(ws_echo))
+        .route(
+            "/redirect",
+            any(move || {
+                let redirect = redirect.clone();
+                async move { (StatusCode::FOUND, [("location", redirect)]).into_response() }
+            }),
+        );
+    f.tasks.push(tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    }));
+    *f.upstream.write().unwrap() = next;
+    // The old backend stops HTTP but retains the already established WebSocket task.
+    f.tasks[1].abort();
+    let response = client
+        .post(f.local.join("echo?new=1").unwrap())
+        .header(header::ORIGIN, f.local.origin().ascii_serialization())
+        .header(header::REFERER, f.local.join("ui").unwrap().as_str())
+        .body("after switch")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let echoed: Value = response.json().await.unwrap();
+    assert_eq!(echoed["origin"], next_origin);
+    assert_eq!(echoed["referer"], format!("{next_origin}/ui"));
+    assert_eq!(echoed["body"], "after switch");
+    let response = client
+        .get(f.local.join("redirect").unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        f.local.join("echo?new=1").unwrap().as_str()
+    );
+    old_socket
+        .send(RemoteMessage::Text("still connected".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        old_socket.next().await.unwrap().unwrap(),
+        RemoteMessage::Text("still connected".into())
+    );
+    let (mut new_socket, _) = connect_async(ws_url.as_str()).await.unwrap();
+    new_socket
+        .send(RemoteMessage::Text("new connection".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        new_socket.next().await.unwrap().unwrap(),
+        RemoteMessage::Text("new connection".into())
+    );
+}
+
+#[tokio::test]
+async fn domain_update_is_validated_and_transactional_before_touching_live_targets() {
+    let route = ServiceRoute {
+        id: "fixed".into(),
+        name: "API".into(),
+        nas_port: 8084,
+        local_port: 18084,
+        upstream: "https://old-0.my-nas.fnos.net/".into(),
+        enabled: true,
+    };
+    let cancel = CancellationToken::new();
+    let mut handles = vec![ProxyHandle {
+        route_id: route.id.clone(),
+        upstream: Arc::new(StdRwLock::new(url::Url::parse(&route.upstream).unwrap())),
+        info: ListenerInfo {
+            name: route.name.clone(),
+            local_url: "http://127.0.0.1:18084/".into(),
+            upstream: route.upstream.clone(),
+            nas_port: route.nas_port,
+        },
+        cancel: cancel.clone(),
+        task: tokio::spawn(async {}),
+    }];
+    let next = ServiceRoute {
+        upstream: "https://new-0.my-nas.fnos.net/".into(),
+        ..route.clone()
+    };
+    assert!(
+        update_upstreams(&mut handles, std::slice::from_ref(&next), "my-nas", || Err(
+            error("save failed")
+        ))
+        .is_err()
+    );
+    assert_eq!(handles[0].info.upstream, route.upstream);
+    assert_eq!(handles[0].upstream.read().unwrap().as_str(), route.upstream);
+    let unsafe_route = ServiceRoute {
+        upstream: "https://127.0.0.1/".into(),
+        ..next.clone()
+    };
+    assert!(
+        update_upstreams(&mut handles, &[unsafe_route], "my-nas", || panic!(
+            "must validate before saving"
+        ))
+        .is_err()
+    );
+    let wrong_port = ServiceRoute {
+        nas_port: 8085,
+        ..next.clone()
+    };
+    assert!(
+        update_upstreams(&mut handles, &[wrong_port], "my-nas", || panic!(
+            "must reject port change before saving"
+        ))
+        .is_err()
+    );
+    update_upstreams(&mut handles, std::slice::from_ref(&next), "my-nas", || {
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(handles[0].info.upstream, next.upstream);
+    assert_eq!(handles[0].upstream.read().unwrap().as_str(), next.upstream);
+    assert_eq!(handles[0].info.local_url, "http://127.0.0.1:18084/");
+    assert!(!cancel.is_cancelled());
+    stop(handles).await;
 }

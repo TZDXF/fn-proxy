@@ -2,7 +2,7 @@ use crate::{
     docker::{ContainerCollector, ContainerMetadata, ContainerPacket, StreamLimits, StreamMatch},
     error::{error, Result},
     resolver::{browser_client, millis, BROWSER_UA},
-    types::{ConnectionInfo, DiscoveredService},
+    types::ConnectionInfo,
 };
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
@@ -378,6 +378,23 @@ impl NasSession {
             info,
         }))
     }
+    // Domain maintenance only needs the two entry registries, not container enumeration.
+    pub async fn domain_inventory(&self) -> Result<crate::types::ServiceInventory> {
+        let mut rpc = self.rpc.lock().await;
+        let desktop = rpc
+            .call(
+                "appcgi.sac.entry.v1.getEntryList",
+                json!({"data":{"language":"zh_CN"}}),
+                false,
+            )
+            .await
+            .and_then(|value| crate::inventory::parse_inventory(&value, &self.info.fn_id));
+        let docker = rpc
+            .call("appcgi.sac.entry.v1.dockerList", json!({}), false)
+            .await
+            .and_then(|value| crate::inventory::parse_docker_inventory(&value, &self.info.fn_id));
+        crate::inventory::merge_inventories(desktop, docker)
+    }
     pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {
         let mut rpc = self.rpc.lock().await;
         let desktop = rpc
@@ -404,9 +421,6 @@ impl NasSession {
         crate::docker::attach_container_ports(&mut report, containers);
         Ok(report)
     }
-    pub async fn discover(&self) -> Result<Vec<DiscoveredService>> {
-        Ok(self.inventory().await?.services)
-    }
     pub async fn refresh_entry_token(&self) -> Result<()> {
         let previous = self.entry_token.read().await.to_string();
         let result = self
@@ -432,7 +446,7 @@ impl NasSession {
 }
 use sha2::Digest;
 #[cfg(test)]
-pub fn parse_entries(value: &Value, fn_id: &str) -> Vec<DiscoveredService> {
+pub fn parse_entries(value: &Value, fn_id: &str) -> Vec<crate::types::DiscoveredService> {
     crate::inventory::parse_inventory(value, fn_id)
         .map(|report| report.services)
         .unwrap_or_default()
