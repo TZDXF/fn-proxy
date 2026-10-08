@@ -8,6 +8,9 @@ struct Fixture {
     hub: SessionHub,
     upstream: UpstreamHub,
     cancel: CancellationToken,
+    recovery: Arc<Recovery>,
+    recovery_events: Arc<std::sync::Mutex<Vec<Text>>>,
+    entry_hits: Arc<AtomicU64>,
     tasks: Vec<JoinHandle<()>>,
 }
 impl Drop for Fixture {
@@ -29,6 +32,7 @@ async fn echo(request: Request) -> Response {
         "cookie":parts.headers.get(header::COOKIE).and_then(|v|v.to_str().ok()),
         "origin":parts.headers.get(header::ORIGIN).and_then(|v|v.to_str().ok()),
         "referer":parts.headers.get(header::REFERER).and_then(|v|v.to_str().ok()),
+        "acceptEncoding":parts.headers.get(header::ACCEPT_ENCODING).and_then(|v|v.to_str().ok()),
         "hop":parts.headers.get("x-hop").and_then(|v|v.to_str().ok()),
     });
     Response::builder()
@@ -54,6 +58,16 @@ async fn entry_gate(headers: HeaderMap) -> Response {
         StatusCode::FORBIDDEN
     };
     (status, "fixture relay authorization result").into_response()
+}
+const RELAY_EXPIRED: &str =
+    "<html><title>FN Connect</title>FN Connect 暂无权限访问该服务...</html>";
+async fn protected_ws(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
+    if headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+        != Some("entry-token=fixture-entry-token")
+    {
+        return (StatusCode::FORBIDDEN, RELAY_EXPIRED).into_response();
+    }
+    ws_echo(headers, ws).await
 }
 async fn ws_echo(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     assert_eq!(
@@ -89,9 +103,75 @@ async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
     .unwrap();
     let service = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream = url::Url::parse(&format!("http://{}/", service.local_addr().unwrap())).unwrap();
+    let entry_hits = Arc::new(AtomicU64::new(0));
+    let gate_hits = entry_hits.clone();
+    let permanent_hits = entry_hits.clone();
     let service_app = Router::new()
         .route("/echo", any(echo))
         .route("/entry-gate", any(entry_gate))
+        .route(
+            "/recoverable",
+            any(move |headers: HeaderMap, body: String| {
+                let hits = gate_hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    if headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+                        == Some("entry-token=fixture-entry-token")
+                    {
+                        (StatusCode::OK, body).into_response()
+                    } else {
+                        (StatusCode::FORBIDDEN, RELAY_EXPIRED).into_response()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/permanent-relay-error",
+            any(move || {
+                let hits = permanent_hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::FORBIDDEN, RELAY_EXPIRED).into_response()
+                }
+            }),
+        )
+        .route(
+            "/app-denied",
+            any(|| async {
+                (
+                    StatusCode::FORBIDDEN,
+                    "fixture application permission denied",
+                )
+            }),
+        )
+        .route(
+            "/large-denied",
+            any(|| async {
+                (
+                    StatusCode::FORBIDDEN,
+                    "x".repeat(ERROR_PREFIX_LIMIT * 4) + RELAY_EXPIRED,
+                )
+            }),
+        )
+        .route(
+            "/slow-denied",
+            any(|| async {
+                let stream = futures_util::stream::unfold(0u8, |step| async move {
+                    match step {
+                        0 => Some((Ok::<_, std::io::Error>("fixture first chunk"), 1)),
+                        1 => {
+                            tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+                            Some((Ok("fixture last chunk"), 2))
+                        }
+                        _ => None,
+                    }
+                });
+                let mut response = Response::new(Body::from_stream(stream));
+                *response.status_mut() = StatusCode::FORBIDDEN;
+                response
+            }),
+        )
+        .route("/protected-ws", any(protected_ws))
         .route("/ws", any(ws_echo))
         .route(
             "/redirect",
@@ -107,8 +187,11 @@ async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
     let hub = Arc::new(RwLock::new(Some(session)));
     let cancel = CancellationToken::new();
     let upstream = Arc::new(StdRwLock::new(upstream));
+    let recovery = Arc::new(Recovery::default());
+    let recovery_events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ctx = ProxyContext {
         session: hub.clone(),
+        recovery: Some(recovery.clone()),
         upstream: upstream.clone(),
         local_port: port,
         allow_lan_access,
@@ -133,6 +216,9 @@ async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
         hub,
         upstream,
         cancel,
+        recovery,
+        recovery_events,
+        entry_hits,
         tasks: vec![authentication, service_task, proxy_task],
     }
 }
@@ -175,6 +261,7 @@ async fn http_api_keeps_method_query_body_auth_and_filters_cookies() {
         result["cookie"],
         "application=owned; entry-token=fixture-entry-token"
     );
+    assert_eq!(result["acceptEncoding"], "identity");
     assert!(result["hop"].is_null());
     assert_ne!(result["origin"], f.local.origin().ascii_serialization());
     assert!(result["referer"].as_str().unwrap().ends_with("/ui"));
@@ -1028,4 +1115,245 @@ async fn live_update_failures_preserve_old_listener_and_release_prepared_ports()
     assert_eq!(counter.load(Ordering::Relaxed), 42);
     assert!(TcpListener::bind(("127.0.0.1", old_port)).await.is_err());
     stop(handles).await;
+}
+
+async fn configure_fixture_recovery(f: &Fixture) -> Arc<AtomicU64> {
+    let original = f.hub.read().await.clone().unwrap();
+    let hub = f.hub.clone();
+    let attempts = Arc::new(AtomicU64::new(0));
+    let calls = attempts.clone();
+    let events = f.recovery_events.clone();
+    f.recovery.configure(
+        Arc::new(move |_| {
+            let hub = hub.clone();
+            let original = original.clone();
+            let calls = calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                original.refresh_entry_token().await?;
+                *hub.write().await = Some(original);
+                Ok(())
+            })
+        }),
+        Arc::new(move |_, text| events.lock().unwrap().push(text)),
+    );
+    attempts
+}
+async fn expire_fixture(f: &Fixture) {
+    let session = f.hub.read().await.clone().unwrap();
+    *session.entry_token.write().await =
+        zeroize::Zeroizing::new("fixture-expired-entry-token".to_owned());
+}
+#[tokio::test]
+async fn fn_connect_expiry_refreshes_credentials_and_retries_empty_get_once() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    expire_fixture(&f).await;
+    let response = reqwest::get(f.local.join("recoverable").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(f.entry_hits.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let events = f.recovery_events.lock().unwrap();
+    assert!(events.iter().any(|t| t.code == "logs.requestEntryExpired"));
+    assert!(events.iter().any(|t| t.code == "logs.requestRetry"));
+    let log = serde_json::to_string(&*events).unwrap();
+    assert!(!log.contains("fixture-entry-token"));
+    assert!(!log.contains("fixture-expired-entry-token"));
+    assert!(!log.contains(RELAY_EXPIRED));
+}
+#[tokio::test]
+async fn missing_session_recovers_before_post_is_sent_and_preserves_body() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    *f.hub.write().await = None;
+    let response = reqwest::Client::new()
+        .post(f.local.join("recoverable").unwrap())
+        .body("fixture-write-body")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "fixture-write-body");
+    assert_eq!(f.entry_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn expired_post_and_get_with_body_trigger_recovery_but_are_never_replayed() {
+    for method in [axum::http::Method::POST, axum::http::Method::GET] {
+        let f = fixture().await;
+        let calls = configure_fixture_recovery(&f).await;
+        expire_fixture(&f).await;
+        let response = reqwest::Client::new()
+            .request(method, f.local.join("recoverable").unwrap())
+            .body("fixture-private-body")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+        assert_eq!(response.text().await.unwrap(), RELAY_EXPIRED);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let restored = f
+                    .hub
+                    .read()
+                    .await
+                    .clone()
+                    .unwrap()
+                    .entry_token
+                    .read()
+                    .await
+                    .as_str()
+                    == "fixture-entry-token";
+                if restored {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(f.entry_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let events = f.recovery_events.lock().unwrap();
+        assert!(events.iter().any(|t| t.code == "logs.requestReplaySkipped"));
+        assert!(!serde_json::to_string(&*events)
+            .unwrap()
+            .contains("fixture-private-body"));
+    }
+}
+#[tokio::test]
+async fn ordinary_app_denial_is_forwarded_unchanged_without_reauth() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    let response = reqwest::get(f.local.join("app-denied").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "fixture application permission denied"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn repeated_relay_denial_does_not_loop_or_resubmit_requests_indefinitely() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    let response = reqwest::get(f.local.join("permanent-relay-error").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(response.text().await.unwrap(), RELAY_EXPIRED);
+    assert_eq!(f.entry_hits.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // A new request cannot immediately start another recovery for the same failing page.
+    assert_eq!(
+        reqwest::get(f.local.join("permanent-relay-error").unwrap())
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn host_origin_rejection_never_triggers_login() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    *f.hub.write().await = None;
+    let response = reqwest::Client::new()
+        .get(f.local.join("recoverable").unwrap())
+        .header(header::ORIGIN, "https://fixture-untrusted.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(f.entry_hits.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn bounded_and_timed_error_inspection_preserves_all_response_bytes() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    let response = reqwest::get(f.local.join("large-denied").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "x".repeat(ERROR_PREFIX_LIMIT * 4) + RELAY_EXPIRED
+    );
+    let response = reqwest::get(f.local.join("slow-denied").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "fixture first chunkfixture last chunk"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn websocket_expired_handshake_recovers_before_local_upgrade() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    expire_fixture(&f).await;
+    let mut url = f.local.join("protected-ws").unwrap();
+    url.set_scheme("ws").unwrap();
+    let mut request = url.as_str().into_client_request().unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        "fixture-protocol".parse().unwrap(),
+    );
+    let (mut socket, response) = connect_async(request).await.unwrap();
+    assert_eq!(response.status(), 101);
+    socket
+        .send(RemoteMessage::Text("fixture recovered socket".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap().into_text().unwrap(),
+        "fixture recovered socket"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn separate_connections_never_share_recovery_or_credentials() {
+    let first = fixture().await;
+    let second = fixture().await;
+    let first_calls = configure_fixture_recovery(&first).await;
+    let second_calls = configure_fixture_recovery(&second).await;
+    expire_fixture(&first).await;
+    expire_fixture(&second).await;
+    assert_eq!(
+        reqwest::get(first.local.join("recoverable").unwrap())
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+    let second_session = second.hub.read().await.clone().unwrap();
+    assert_eq!(
+        second_session.entry_token.read().await.as_str(),
+        "fixture-expired-entry-token"
+    );
+}
+#[tokio::test]
+async fn concurrent_http_expiry_requests_share_one_credential_exchange() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    expire_fixture(&f).await;
+    let client = reqwest::Client::new();
+    let responses = futures_util::future::join_all(
+        (0..16).map(|_| client.get(f.local.join("recoverable").unwrap()).send()),
+    )
+    .await;
+    for response in responses {
+        assert_eq!(response.unwrap().status(), 200);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

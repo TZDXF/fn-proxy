@@ -182,6 +182,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn recovery_diagnostics_are_persisted_without_transport_secrets() {
+        let directory = TestDirectory::new();
+        let logs = RuntimeLogs::default();
+        logs.enable_file(directory.0.clone()).unwrap();
+        let error = crate::error::AppError::Io(io::Error::other(
+            "fixture-password Cookie=fixture-secret https://fixture.test/private",
+        ))
+        .at("resolve");
+        let entry = LogEntry {
+            time: 1,
+            level: "warn".into(),
+            label: "fixture NAS".into(),
+            message: error.diagnostic(2),
+        };
+        assert!(logs.push(&entry).is_none());
+        let stored = fs::read_to_string(directory.0.join(LOG_FILE_NAME)).unwrap();
+        assert!(stored.contains("logs.recoveryError"));
+        assert!(stored.contains("resolve"));
+        for secret in [
+            "fixture-password",
+            "fixture-secret",
+            "fixture.test",
+            "Cookie",
+        ] {
+            assert!(!stored.contains(secret));
+        }
+    }
     fn entry(time: u64) -> LogEntry {
         LogEntry {
             time,

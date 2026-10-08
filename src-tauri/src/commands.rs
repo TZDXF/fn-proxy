@@ -1,8 +1,9 @@
 use crate::{
     auth::NasSession,
-    error::{error, error_with, Result},
+    error::{error, error_with, AppError, Result},
     logging::RuntimeLogs,
     proxy::{self, ProxyHandle, SessionHub},
+    recovery::{self, Recovery, RecoveryReason},
     resolver, service_sync, storage,
     text::Text,
     types::*,
@@ -41,6 +42,7 @@ pub struct ConnectionState {
     saved: StdMutex<bool>,
     pub profile: StdMutex<Profile>,
     pub session: SessionHub,
+    recovery: Arc<Recovery>,
     pub info: StdRwLock<ConnectionInfo>,
     pub proxies: Mutex<Vec<ProxyHandle>>,
     pub counter: Arc<AtomicU64>,
@@ -57,6 +59,7 @@ impl ConnectionState {
             saved: StdMutex::new(saved),
             profile: StdMutex::new(profile),
             session: Arc::new(tokio::sync::RwLock::new(None)),
+            recovery: Arc::new(Recovery::default()),
             info: StdRwLock::new(ConnectionInfo::default()),
             proxies: Mutex::new(vec![]),
             counter: Arc::new(AtomicU64::new(0)),
@@ -87,6 +90,12 @@ impl ConnectionState {
             message,
         };
         emit_log(app, &self.logs, entry);
+    }
+    fn proxy_session(&self) -> proxy::ProxySession {
+        proxy::ProxySession {
+            hub: self.session.clone(),
+            recovery: Some(self.recovery.clone()),
+        }
     }
     fn profile(&self) -> Profile {
         self.profile.lock().unwrap().clone()
@@ -326,6 +335,7 @@ async fn establish(
     if let Some(cancel) = state.monitor.lock().await.take() {
         cancel.cancel();
     }
+    state.recovery.clear();
     if let Some(previous) = state.session.write().await.take() {
         previous.rpc.lock().await.close().await;
     }
@@ -360,89 +370,209 @@ async fn establish(
     spawn_monitor(app.clone(), state.clone(), nas.clone()).await;
     Ok(nas.info.clone())
 }
-async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, mut current: Arc<NasSession>) {
+/// Never hold the connection operation lock across network calls/backoff: manual disconnect
+/// must be able to cancel recovery immediately, and cancelled workers must not install a session.
+async fn recover_connection(
+    app: &AppHandle,
+    state: &Arc<ConnectionState>,
+    reason: RecoveryReason,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let current = state.session.read().await.clone();
+    if reason.refresh_first() {
+        if let Some(current) = current {
+            let result = tokio::select! {
+                _ = cancel.cancelled() => return Err(error("recovery.cancelled")),
+                result = tokio::time::timeout(Duration::from_secs(30), current.refresh_entry_token()) =>
+                    result.unwrap_or_else(|e| Err(AppError::from(e).at("entry_refresh"))),
+            };
+            match result {
+                Ok(()) => {
+                    if cancel.is_cancelled() {
+                        return Err(error("recovery.cancelled"));
+                    }
+                    state.log(app, "info", Text::new("logs.credentialsRefreshed"));
+                    return Ok(());
+                }
+                Err(e) => {
+                    state.log(app, "warn", e.diagnostic(1));
+                    if !e.retryable() && e.text().code != "auth.nasRejected" {
+                        let _guard = tokio::select! {
+                            _ = cancel.cancelled() => return Err(error("recovery.cancelled")),
+                            guard = state.operation.lock() => guard,
+                        };
+                        if cancel.is_cancelled() {
+                            return Err(error("recovery.cancelled"));
+                        }
+                        *state.session.write().await = None;
+                        state.info.write().unwrap().connected = false;
+                        state.info.write().unwrap().message = e.text();
+                        state.log(app, "error", Text::new("logs.reconnectManualRequired"));
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+    let credentials = {
+        let _guard = tokio::select! {
+            _ = cancel.cancelled() => return Err(error("recovery.cancelled")),
+            guard = state.operation.lock() => guard,
+        };
+        if cancel.is_cancelled() {
+            return Err(error("recovery.cancelled"));
+        }
+        *state.session.write().await = None;
+        state.info.write().unwrap().connected = false;
+        state.info.write().unwrap().message = Text::new("logs.reconnecting");
+        state
+            .credentials
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| error("recovery.unavailable"))?
+    };
+    let result = recovery::retry(
+        cancel,
+        || async {
+            let base = resolver::resolve(&credentials.fn_id)
+                .await
+                .map_err(|e| e.at("resolve"))?;
+            NasSession::login(
+                base,
+                &credentials.fn_id,
+                &credentials.username,
+                &credentials.password,
+                None,
+                credentials.remember,
+            )
+            .await
+        },
+        &|level, text| state.log(app, level, text),
+    )
+    .await;
+    let _guard = tokio::select! {
+        _ = cancel.cancelled() => return Err(error("recovery.cancelled")),
+        guard = state.operation.lock() => guard,
+    };
+    if cancel.is_cancelled() {
+        return Err(error("recovery.cancelled"));
+    }
+    match result {
+        Ok(nas) => {
+            *state.session.write().await = Some(nas.clone());
+            *state.info.write().unwrap() = nas.info.clone();
+            state.log(app, "success", Text::new("logs.reconnected"));
+            Ok(())
+        }
+        Err(e) => {
+            state.info.write().unwrap().message = e.text();
+            Err(e)
+        }
+    }
+}
+async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc<NasSession>) {
     let cancel = CancellationToken::new();
     *state.monitor.lock().await = Some(cancel.clone());
+    let weak = Arc::downgrade(&state);
+    let handler_app = app.clone();
+    let handler_cancel = cancel.clone();
+    let log_weak = weak.clone();
+    let log_app = app.clone();
+    state.recovery.configure(
+        Arc::new(move |reason| {
+            let weak = weak.clone();
+            let app = handler_app.clone();
+            let cancel = handler_cancel.clone();
+            Box::pin(async move {
+                let state = weak.upgrade().ok_or_else(|| error("recovery.cancelled"))?;
+                recover_connection(&app, &state, reason, &cancel).await
+            })
+        }),
+        Arc::new(move |level, text| {
+            if let Some(state) = log_weak.upgrade() {
+                state.log(&log_app, level, text);
+            }
+        }),
+    );
     let manager = app.state::<Arc<AppState>>().inner().clone();
     tauri::async_runtime::spawn(async move {
         let initial = tokio::select! { _=cancel.cancelled()=>return, result=refresh_domains(&app, &manager, &state, &current)=>result };
-        if initial.is_err() {
+        if let Err(e) = initial {
+            state.log(&app, "warn", e.at("domain_inventory").diagnostic(1));
             report_domain_warnings(&app, &state, &[Text::new("logs.domainReadFailed")]);
         }
+        // Do not keep a stale session alive in this task after request-driven recovery.
+        drop(current);
         let mut domains_refreshed = tokio::time::Instant::now();
-        let mut tick = tokio::time::interval(Duration::from_secs(15));
-        tick.tick().await;
         let mut refreshed = tokio::time::Instant::now();
+        let mut generation = state.recovery.generation();
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tick.tick().await;
         loop {
             tokio::select! {_=cancel.cancelled()=>break,_=tick.tick()=>{}}
-            let alive = {
-                let mut rpc = current.rpc.lock().await;
-                tokio::select! {_=cancel.cancelled()=>break,result=rpc.heartbeat()=>result}
-            };
-            if alive.is_ok() {
-                if domains_refreshed.elapsed() >= Duration::from_secs(60) {
-                    let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
-                    if updated.is_err() {
-                        report_domain_warnings(&app, &state, &[Text::new("logs.domainSyncFailed")]);
-                    }
-                    domains_refreshed = tokio::time::Instant::now();
-                }
-                if refreshed.elapsed() >= Duration::from_secs(15 * 60) {
-                    let updated = tokio::select! {_=cancel.cancelled()=>break,result=current.refresh_entry_token()=>result};
-                    if updated.is_ok() {
-                        state.log(&app, "info", Text::new("logs.credentialsRefreshed"));
-                    }
-                    refreshed = tokio::time::Instant::now();
-                }
-                continue;
+            let observed = state.recovery.generation();
+            if observed != generation {
+                generation = observed;
+                refreshed = tokio::time::Instant::now();
             }
-            let _guard = state.operation.lock().await;
-            if cancel.is_cancelled() {
-                break;
-            }
-            state.log(&app, "warn", Text::new("logs.reconnecting"));
-            state.info.write().unwrap().connected = false;
-            let credentials = state.credentials.lock().await.clone();
-            let Some(credentials) = credentials else {
-                break;
+            let current = state.session.read().await.clone();
+            let alive = if let Some(current) = &current {
+                let mut rpc =
+                    tokio::select! { _=cancel.cancelled()=>break, rpc=current.rpc.lock()=>rpc };
+                tokio::select! { _=cancel.cancelled()=>break, result=rpc.heartbeat()=>result }
+            } else {
+                Err(error("proxy.sessionUnavailable"))
             };
-            let reconnect = async {
-                let base = resolver::resolve(&credentials.fn_id).await?;
-                NasSession::login(
-                    base,
-                    &credentials.fn_id,
-                    &credentials.username,
-                    &credentials.password,
-                    None,
-                    credentials.remember,
-                )
-                .await
-            };
-            let recovered = tokio::select! {_=cancel.cancelled()=>break,result=reconnect=>result};
-            match recovered {
-                Ok(nas) => {
-                    current = nas;
-                    *state.session.write().await = Some(current.clone());
-                    *state.info.write().unwrap() = current.info.clone();
-                    state.log(&app, "success", Text::new("logs.reconnected"));
-                    refreshed = tokio::time::Instant::now();
-                    drop(_guard);
-                    let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
-                    if updated.is_err() {
-                        report_domain_warnings(
-                            &app,
-                            &state,
-                            &[Text::new("logs.domainSyncAfterReconnectFailed")],
-                        );
-                    }
-                    domains_refreshed = tokio::time::Instant::now();
+            if let Err(e) = alive {
+                if let Some(current) = &current {
+                    state.log(
+                        &app,
+                        "warn",
+                        Text::with(
+                            "logs.heartbeatFailed",
+                            [(
+                                "seconds",
+                                current.created_at.elapsed().as_secs().to_string(),
+                            )],
+                        ),
+                    );
                 }
-                Err(e) => {
-                    *state.session.write().await = None;
-                    state.info.write().unwrap().message = e.text();
-                    state.log(&app, "error", Text::new("logs.reconnectFailed"));
+                state.log(&app, "warn", e.at("heartbeat").diagnostic(1));
+                if state
+                    .recovery
+                    .maintain(RecoveryReason::HeartbeatFailed, observed, &cancel)
+                    .await
+                    .is_err()
+                {
+                    // A slow shared repair may still be running; requests can await its result.
                     break;
                 }
+                generation = state.recovery.generation();
+                refreshed = tokio::time::Instant::now();
+                continue;
+            }
+            let current = current.unwrap();
+            if domains_refreshed.elapsed() >= Duration::from_secs(60) {
+                let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
+                if let Err(e) = updated {
+                    state.log(&app, "warn", e.at("domain_inventory").diagnostic(1));
+                    report_domain_warnings(&app, &state, &[Text::new("logs.domainSyncFailed")]);
+                }
+                domains_refreshed = tokio::time::Instant::now();
+            }
+            if refreshed.elapsed() >= Duration::from_secs(15 * 60) {
+                if state
+                    .recovery
+                    .maintain(RecoveryReason::PeriodicRefresh, observed, &cancel)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                generation = state.recovery.generation();
+                refreshed = tokio::time::Instant::now();
             }
         }
     });
@@ -528,6 +658,7 @@ pub async fn connect_nas(
         Ok(v) => Ok(v),
         Err(e) => {
             state.info.write().unwrap().message = e.text();
+            state.log(&app, "error", e.diagnostic(1));
             state.log(&app, "error", e.text());
             Err(e)
         }
@@ -547,6 +678,7 @@ pub async fn disconnect_nas(
     if let Some(cancel) = state.monitor.lock().await.take() {
         cancel.cancel();
     }
+    state.recovery.clear();
     if let Some(session) = state.session.write().await.take() {
         session.rpc.lock().await.close().await;
     }
@@ -747,7 +879,15 @@ pub async fn refresh_session(
         .await
         .clone()
         .ok_or_else(|| error("workspace.loginRequired"))?;
-    session.refresh_entry_token().await?;
+    drop(session);
+    state
+        .recovery
+        .recover(
+            RecoveryReason::PeriodicRefresh,
+            state.recovery.generation(),
+            &CancellationToken::new(),
+        )
+        .await?;
     state.log(&app, "success", Text::new("logs.credentialsUpdated"));
     Ok(())
 }
@@ -803,7 +943,7 @@ pub async fn start_proxy(
     let handles = proxy::start(
         &services,
         &session.info.fn_id,
-        state.session.clone(),
+        state.proxy_session(),
         state.counter.clone(),
         manager.allow_lan_access.load(Ordering::Relaxed),
     )
@@ -916,7 +1056,7 @@ pub async fn update_services(
             &mut proxies,
             &profile.services,
             &fn_id,
-            state.session.clone(),
+            state.proxy_session(),
             state.counter.clone(),
             manager.allow_lan_access.load(Ordering::Relaxed),
             persist,
@@ -976,6 +1116,7 @@ pub async fn remove_connection(
     if let Some(cancel) = connection.monitor.lock().await.take() {
         cancel.cancel();
     }
+    connection.recovery.clear();
     if let Some(session) = connection.session.write().await.take() {
         session.rpc.lock().await.close().await;
     }

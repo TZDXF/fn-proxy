@@ -26,12 +26,21 @@ enum MockStream {
     Oversized,
     SlowProgress,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MockAuth {
+    Normal,
+    RejectOldEntry,
+    TwoFactor,
+    RotateEntry,
+}
 #[derive(Clone)]
 struct MockNas {
     private: Arc<RsaPrivateKey>,
     ticket_mode: bool,
     docker_allowed: bool,
     stream_mode: MockStream,
+    auth_mode: MockAuth,
+    exchanges: Arc<std::sync::atomic::AtomicU64>,
 }
 const MOCK_SECRET: &[u8] = b"fixture-session-secret-not-a-real-credential";
 async fn login_page(headers: HeaderMap) -> impl IntoResponse {
@@ -156,11 +165,26 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
                         cbc::Encryptor::<aes::Aes256>::new_from_slices(&envelope_key, &envelope_iv)
                             .unwrap()
                             .encrypt_padded_vec_mut::<Pkcs7>(MOCK_SECRET);
-                    json!({"reqid":id,"result":"suc","ticket":if state.ticket_mode {"fixture-ticket"}else{""},"token":"fixture-legacy-token","secret":B64.encode(encrypted),"isTwofaEnforced":false,"isBindTwofaSecret":false})
+                    json!({"reqid":id,"result":"suc","ticket":if state.ticket_mode {"fixture-ticket"}else{""},"token":"fixture-legacy-token","secret":B64.encode(encrypted),"isTwofaEnforced":false,"isBindTwofaSecret":state.auth_mode == MockAuth::TwoFactor})
                 }
             }
             "appcgi.sac.entry.v1.exchangeEntryToken" => {
-                json!({"reqid":id,"result":"suc","data":{"token":"fixture-entry-token"}})
+                let previous = payload["data"]["token"].as_str();
+                if state.auth_mode == MockAuth::RejectOldEntry && previous.is_some() {
+                    json!({"reqid":id,"result":"fail","errno":12345})
+                } else if state.auth_mode == MockAuth::RotateEntry {
+                    let version = state.exchanges.load(std::sync::atomic::Ordering::SeqCst);
+                    if let Some(previous) = previous {
+                        assert_eq!(previous, format!("fixture-entry-token-{version}"));
+                    }
+                    let version = state
+                        .exchanges
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
+                    json!({"reqid":id,"result":"suc","data":{"token":format!("fixture-entry-token-{version}")}})
+                } else {
+                    json!({"reqid":id,"result":"suc","data":{"token":"fixture-entry-token"}})
+                }
             }
             "appcgi.sac.entry.v1.getEntryList" => {
                 json!({"reqid":id,"result":"suc","data":{"list":[{"entryKey":"fixture-app","title":"Fixture service","uri":{"port":"8084","fnDomain":"fixture-0"}},{"entryKey":"fixture-local","title":"Local-only fixture","uri":{"port":"9090"}},{"entryKey":"fixture-builtin","title":"Builtin fixture","uri":{"path":"/app/fixture"}}]}})
@@ -202,11 +226,21 @@ async fn mock_server_with_stream(
     docker_allowed: bool,
     stream_mode: MockStream,
 ) -> (url::Url, tokio::task::JoinHandle<()>) {
+    mock_server_with_auth(ticket_mode, docker_allowed, stream_mode, MockAuth::Normal).await
+}
+async fn mock_server_with_auth(
+    ticket_mode: bool,
+    docker_allowed: bool,
+    stream_mode: MockStream,
+    auth_mode: MockAuth,
+) -> (url::Url, tokio::task::JoinHandle<()>) {
     let state = MockNas {
         private: Arc::new(RsaPrivateKey::new(&mut rand::thread_rng(), 1024).unwrap()),
         ticket_mode,
         docker_allowed,
         stream_mode,
+        auth_mode,
+        exchanges: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     let app = Router::new()
         .route("/login", get(login_page))
@@ -526,5 +560,75 @@ async fn interrupted_container_source_preserves_registered_mappings_and_session(
     assert_eq!(report.sources[2].count, None);
     session.rpc.lock().await.heartbeat().await.unwrap();
     session.rpc.lock().await.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn rejected_old_entry_token_is_reexchanged_without_password_login() {
+    let (base, server) =
+        mock_server_with_auth(true, true, MockStream::Complete, MockAuth::RejectOldEntry).await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    *session.entry_token.write().await = Zeroizing::new("fixture-expired-token".into());
+    session.refresh_entry_token().await.unwrap();
+    assert_eq!(
+        session.entry_token.read().await.as_str(),
+        "fixture-entry-token"
+    );
+    session.rpc.lock().await.heartbeat().await.unwrap();
+    session.rpc.lock().await.close().await;
+    server.abort();
+}
+#[tokio::test]
+async fn concurrent_entry_refreshes_use_the_latest_token_snapshot() {
+    let (base, server) =
+        mock_server_with_auth(true, true, MockStream::Complete, MockAuth::RotateEntry).await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let (first, second) =
+        tokio::join!(session.refresh_entry_token(), session.refresh_entry_token());
+    first.unwrap();
+    second.unwrap();
+    assert_eq!(
+        session.entry_token.read().await.as_str(),
+        "fixture-entry-token-3"
+    );
+    session.rpc.lock().await.close().await;
+    server.abort();
+}
+#[tokio::test]
+async fn missing_two_factor_is_classified_as_manual_intervention() {
+    let (base, server) =
+        mock_server_with_auth(true, true, MockStream::Complete, MockAuth::TwoFactor).await;
+    let e = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(e.text().code, "auth.tfaRequired");
+    assert_eq!(e.stage(), "two_factor");
+    assert!(!e.retryable());
     server.abort();
 }

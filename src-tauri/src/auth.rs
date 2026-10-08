@@ -1,6 +1,6 @@
 use crate::{
     docker::{ContainerCollector, ContainerMetadata, ContainerPacket, StreamLimits, StreamMatch},
-    error::{error, error_with, Result},
+    error::{error, error_with, AppError, Result},
     resolver::{browser_client, millis, BROWSER_UA},
     text::Text,
     types::ConnectionInfo,
@@ -147,7 +147,17 @@ impl RpcClient {
                     Message::Ping(bytes) => {
                         self.socket.send(Message::Pong(bytes)).await?;
                     }
-                    Message::Close(_) => return Err(error("auth.authClosed")),
+                    Message::Close(frame) => {
+                        return Err(error_with(
+                            "auth.authClosed",
+                            [(
+                                "closeCode",
+                                frame
+                                    .map(|f| u16::from(f.code).to_string())
+                                    .unwrap_or_default(),
+                            )],
+                        ))
+                    }
                     _ => {}
                 }
             }
@@ -233,10 +243,10 @@ impl RpcClient {
         .map_err(|_| error("containers.totalTimeout"))?
     }
     pub async fn heartbeat(&mut self) -> Result<()> {
-        self.socket
-            .send(Message::Text("{\"req\":\"ping\"}".into()))
-            .await?;
         tokio::time::timeout(Duration::from_secs(10), async {
+            self.socket
+                .send(Message::Text("{\"req\":\"ping\"}".into()))
+                .await?;
             while let Some(message) = self.socket.next().await {
                 match message? {
                     Message::Text(t) => {
@@ -248,7 +258,17 @@ impl RpcClient {
                         }
                     }
                     Message::Ping(b) => self.socket.send(Message::Pong(b)).await?,
-                    Message::Close(_) => return Err(error("auth.authClosed")),
+                    Message::Close(frame) => {
+                        return Err(error_with(
+                            "auth.authClosed",
+                            [(
+                                "closeCode",
+                                frame
+                                    .map(|f| u16::from(f.code).to_string())
+                                    .unwrap_or_default(),
+                            )],
+                        ))
+                    }
                     _ => {}
                 }
             }
@@ -264,6 +284,7 @@ pub struct NasSession {
     pub rpc: Mutex<RpcClient>,
     pub entry_token: RwLock<Zeroizing<String>>,
     pub info: ConnectionInfo,
+    pub created_at: tokio::time::Instant,
 }
 impl NasSession {
     pub async fn login(
@@ -288,61 +309,80 @@ impl NasSession {
             .header("Sec-Fetch-Site", "same-site")
             .header("Referer", "https://fnos.net/")
             .send()
-            .await?;
+            .await
+            .map_err(|e| AppError::from(e).at("entry_handshake"))?;
         if !boot.status().is_success() {
-            return Err(error("auth.entryHandshakeFailed"));
+            return Err(error_with(
+                "auth.entryHandshakeFailed",
+                [("status", boot.status().as_u16().to_string())],
+            )
+            .at("entry_handshake"));
         }
-        let mut rpc = RpcClient::open(&base, &jar).await?;
-        let key = rpc.call("util.crypto.getRSAPub", json!({}), false).await?;
+        let mut rpc = RpcClient::open(&base, &jar)
+            .await
+            .map_err(|e| e.at("websocket_open"))?;
+        let key = rpc
+            .call("util.crypto.getRSAPub", json!({}), false)
+            .await
+            .map_err(|e| e.at("crypto_handshake"))?;
         rpc.si = key["si"]
             .as_str()
-            .ok_or_else(|| error("auth.sessionIdMissing"))?
+            .ok_or_else(|| error("auth.sessionIdMissing").at("crypto_handshake"))?
             .to_owned();
-        rpc.crypto = Some(CryptoContext::new(
-            key["pub"]
-                .as_str()
-                .ok_or_else(|| error("auth.rsaKeyMissing"))?,
-        )?);
+        rpc.crypto =
+            Some(CryptoContext::new(key["pub"].as_str().ok_or_else(
+                || error("auth.rsaKeyMissing").at("crypto_handshake"),
+            )?)?);
         let did = format!(
             "fn-proxy-{}",
             hex::encode(sha2::Sha256::digest(
                 format!("{fn_id}:{username}").as_bytes()
             ))
         );
-        let mut logged=rpc.call("user.login",json!({"user":username,"password":password,"stay":remember,"deviceType":"Browser","deviceName":"Windows-FNProxy","did":did,"ver":2}),true).await?;
+        let mut logged=rpc.call("user.login",json!({"user":username,"password":password,"stay":remember,"deviceType":"Browser","deviceName":"Windows-FNProxy","did":did,"ver":2}),true).await.map_err(|e| e.at("user_login"))?;
         if logged["isTwofaEnforced"].as_bool() == Some(true)
             && logged["isBindTwofaSecret"].as_bool() != Some(true)
         {
-            return Err(error("auth.tfaBindingRequired"));
+            return Err(error("auth.tfaBindingRequired").at("two_factor"));
         }
         if logged["isBindTwofaSecret"].as_bool() == Some(true)
             && logged["isTrustedDevice"].as_bool() != Some(true)
         {
             let code = otp
                 .filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit()))
-                .ok_or_else(|| error("auth.tfaRequired"))?;
-            logged=rpc.call("user.2fa.loginVerify",json!({"code":code,"isTrustedDevice":false,"accessToken":logged["accessToken"],"stay":u8::from(remember),"deviceType":"Browser","deviceName":"Windows-FNProxy","did":did,"ver":2}),true).await?;
+                .ok_or_else(|| error("auth.tfaRequired").at("two_factor"))?;
+            logged=rpc.call("user.2fa.loginVerify",json!({"code":code,"isTrustedDevice":false,"accessToken":logged["accessToken"],"stay":u8::from(remember),"deviceType":"Browser","deviceName":"Windows-FNProxy","did":did,"ver":2}),true).await.map_err(|e| e.at("two_factor"))?;
         }
         let auth_mode = if let Some(ticket) = logged["ticket"].as_str().filter(|t| !t.is_empty()) {
             let response = http
                 .post(base.join("/app/ticket").unwrap())
                 .json(&json!({"ticket":ticket}))
                 .send()
-                .await?;
+                .await
+                .map_err(|e| AppError::from(e).at("ticket_exchange"))?;
             if !response.status().is_success() {
-                return Err(error("auth.ticketExchangeFailed"));
+                return Err(error_with(
+                    "auth.ticketExchangeFailed",
+                    [("status", response.status().as_u16().to_string())],
+                )
+                .at("ticket_exchange"));
             }
             "ticket-cookie"
         } else if let Some(token) = logged["token"].as_str().filter(|t| !t.is_empty()) {
             jar.add_cookie_str(&format!("fnos-token={token}; Path=/; Secure"), &base);
             "legacy"
         } else {
-            return Err(error("auth.noSession"));
+            return Err(error("auth.noSession").at("user_login"));
         };
         let secret = logged["secret"]
             .as_str()
-            .ok_or_else(|| error("auth.secretMissing"))?;
-        rpc.secret = rpc.crypto.as_ref().unwrap().decrypt_secret(secret)?;
+            .ok_or_else(|| error("auth.secretMissing").at("login_secret"))?;
+        rpc.secret = rpc
+            .crypto
+            .as_ref()
+            .unwrap()
+            .decrypt_secret(secret)
+            .map_err(|e| e.at("login_secret"))?;
         for field in ["token", "longToken", "secret", "ticket", "accessToken"] {
             if let Some(Value::String(value)) = logged.get_mut(field) {
                 value.zeroize();
@@ -354,17 +394,18 @@ impl NasSession {
                 json!({"data":{}}),
                 false,
             )
-            .await?;
+            .await
+            .map_err(|e| e.at("entry_exchange"))?;
         let entry_token = entry["data"]["token"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| error("auth.entryTokenMissing"))?
+            .ok_or_else(|| error("auth.entryTokenMissing").at("entry_exchange"))?
             .to_owned();
         if entry_token
             .bytes()
             .any(|b| b == b';' || b == b'\r' || b == b'\n')
         {
-            return Err(error("auth.credentialInvalid"));
+            return Err(error("auth.credentialInvalid").at("entry_exchange"));
         }
         let info = ConnectionInfo {
             connected: true,
@@ -378,6 +419,7 @@ impl NasSession {
             rpc: Mutex::new(rpc),
             entry_token: RwLock::new(Zeroizing::new(entry_token)),
             info,
+            created_at: tokio::time::Instant::now(),
         }))
     }
     // Domain maintenance only needs the two entry registries, not container enumeration.
@@ -424,23 +466,35 @@ impl NasSession {
         Ok(report)
     }
     pub async fn refresh_entry_token(&self) -> Result<()> {
-        let previous = self.entry_token.read().await.to_string();
-        let result = self
-            .rpc
-            .lock()
-            .await
+        let mut rpc = self.rpc.lock().await;
+        let previous = self.entry_token.read().await.clone();
+        let result = rpc
             .call(
                 "appcgi.sac.entry.v1.exchangeEntryToken",
-                json!({"data":{"token":previous}}),
+                json!({"data":{"token":previous.as_str()}}),
                 false,
             )
-            .await?;
+            .await;
+        // A rejected old entry token is not evidence of a bad NAS password. An authenticated
+        // socket may exchange a fresh token using the same empty request as initial login.
+        let result = match result {
+            Err(e) if e.text().code == "auth.nasRejected" => {
+                rpc.call(
+                    "appcgi.sac.entry.v1.exchangeEntryToken",
+                    json!({"data":{}}),
+                    false,
+                )
+                .await
+            }
+            other => other,
+        }
+        .map_err(|e| e.at("entry_refresh"))?;
         let token = result["data"]["token"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| error("auth.entryTokenRefreshFailed"))?;
+            .ok_or_else(|| error("auth.entryTokenRefreshFailed").at("entry_refresh"))?;
         if token.contains([';', '\r', '\n']) {
-            return Err(error("auth.credentialRefreshInvalid"));
+            return Err(error("auth.credentialRefreshInvalid").at("entry_refresh"));
         }
         *self.entry_token.write().await = Zeroizing::new(token.to_owned());
         Ok(())

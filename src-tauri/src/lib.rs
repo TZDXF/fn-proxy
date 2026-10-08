@@ -7,6 +7,7 @@ mod error;
 mod inventory;
 mod logging;
 mod proxy;
+mod recovery;
 mod resolver;
 mod service_sync;
 mod storage;
