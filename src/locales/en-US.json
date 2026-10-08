@@ -324,6 +324,9 @@
       "probeFailed": "The service returned a non-success status. Check the NAS service."
     },
     "logs": {
+      "appStarted": "Application started.",
+      "appStopped": "Application is exiting.",
+      "fileLoggingFailed": "Cannot write the log file. Runtime logs are still available in the UI.",
       "resolving": "Resolving the FN ID (remote relay only; LAN IPs are never used).",
       "resolvingEntry": "Resolving the FN ID and connecting to the remote entry…",
       "relayFound": "Remote entry found. Running encrypted login and service credential exchange.",

@@ -324,6 +324,9 @@
       "probeFailed": "服务返回非成功状态，请检查 NAS 服务"
     },
     "logs": {
+      "appStarted": "应用已启动",
+      "appStopped": "应用正在退出",
+      "fileLoggingFailed": "无法写入日志文件，运行日志仍可在界面中查看",
       "resolving": "正在解析 FN ID（仅选择远程中继，不使用内网 IP）",
       "resolvingEntry": "正在解析 FN ID 并连接远程入口…",
       "relayFound": "远程入口已找到，正在执行加密登录和服务凭据交换",

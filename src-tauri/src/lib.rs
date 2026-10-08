@@ -5,6 +5,7 @@ mod desktop;
 mod docker;
 mod error;
 mod inventory;
+mod logging;
 mod proxy;
 mod resolver;
 mod service_sync;
@@ -22,6 +23,20 @@ pub fn run() {
             let path = app.path().app_config_dir()?.join("profile.json");
             let profile = storage::load_profiles(&path).unwrap_or_default();
             let state = Arc::new(commands::AppState::new(path, profile));
+            let logging_result = app
+                .path()
+                .app_log_dir()
+                .map_err(std::io::Error::other)
+                .and_then(|directory| state.initialize_logs(directory));
+            if let Err(error) = logging_result {
+                eprintln!("FN Proxy could not initialize runtime log: {error}");
+                state.log(
+                    app.handle(),
+                    "warn",
+                    text::Text::new("logs.fileLoggingFailed"),
+                );
+            }
+            state.log(app.handle(), "info", text::Text::new("logs.appStarted"));
             app.manage(state.clone());
             #[cfg(desktop)]
             desktop::setup(app)?;

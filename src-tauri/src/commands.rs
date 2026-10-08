@@ -1,13 +1,14 @@
 use crate::{
     auth::NasSession,
     error::{error, error_with, Result},
+    logging::RuntimeLogs,
     proxy::{self, ProxyHandle, SessionHub},
     resolver, service_sync, storage,
     text::Text,
     types::*,
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,6 +20,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
+
+fn emit_log(app: &AppHandle, logs: &RuntimeLogs, entry: LogEntry) {
+    let warning = logs.push(&entry);
+    let _ = app.emit("fn-proxy:log", entry);
+    if let Some(warning) = warning {
+        let _ = app.emit("fn-proxy:log", warning);
+    }
+}
 
 #[derive(Clone)]
 struct Credentials {
@@ -39,10 +48,10 @@ pub struct ConnectionState {
     credentials: Mutex<Option<Credentials>>,
     monitor: Mutex<Option<CancellationToken>>,
     domain_warning: StdMutex<Vec<Text>>,
-    logs: Arc<StdMutex<VecDeque<LogEntry>>>,
+    logs: Arc<RuntimeLogs>,
 }
 impl ConnectionState {
-    fn new(profile: Profile, saved: bool, logs: Arc<StdMutex<VecDeque<LogEntry>>>) -> Self {
+    fn new(profile: Profile, saved: bool, logs: Arc<RuntimeLogs>) -> Self {
         Self {
             id: profile.id.clone(),
             saved: StdMutex::new(saved),
@@ -77,12 +86,7 @@ impl ConnectionState {
             label,
             message,
         };
-        let mut logs = self.logs.lock().unwrap();
-        logs.push_back(entry.clone());
-        if logs.len() > 200 {
-            logs.pop_front();
-        }
-        let _ = app.emit("fn-proxy:log", entry);
+        emit_log(app, &self.logs, entry);
     }
     fn profile(&self) -> Profile {
         self.profile.lock().unwrap().clone()
@@ -93,11 +97,11 @@ pub struct AppState {
     pub profile_path: PathBuf,
     connections: StdMutex<BTreeMap<String, Arc<ConnectionState>>>,
     operation: Mutex<()>,
-    logs: Arc<StdMutex<VecDeque<LogEntry>>>,
+    logs: Arc<RuntimeLogs>,
 }
 impl AppState {
     pub fn new(profile_path: PathBuf, workspace: WorkspaceProfiles) -> Self {
-        let logs = Arc::new(StdMutex::new(VecDeque::new()));
+        let logs = Arc::new(RuntimeLogs::default());
         let mut connections = BTreeMap::new();
         for profile in workspace.profiles {
             connections.insert(
@@ -122,6 +126,21 @@ impl AppState {
             operation: Mutex::new(()),
             logs,
         }
+    }
+    pub fn initialize_logs(&self, directory: PathBuf) -> std::io::Result<()> {
+        self.logs.enable_file(directory)
+    }
+    pub fn log(&self, app: &AppHandle, level: &str, message: Text) {
+        emit_log(
+            app,
+            &self.logs,
+            LogEntry {
+                time: resolver::millis(),
+                level: level.to_owned(),
+                label: "FN Proxy".to_owned(),
+                message,
+            },
+        );
     }
     fn all(&self) -> Vec<Arc<ConnectionState>> {
         self.connections.lock().unwrap().values().cloned().collect()
@@ -492,7 +511,7 @@ pub async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot
 }
 #[tauri::command]
 pub fn get_logs(state: State<'_, Arc<AppState>>) -> Vec<LogEntry> {
-    state.logs.lock().unwrap().iter().cloned().collect()
+    state.logs.entries()
 }
 #[tauri::command]
 pub async fn connect_nas(
@@ -1003,6 +1022,7 @@ pub fn shutdown(app: &AppHandle) {
             }
         }
     }
+    manager.log(app, "info", Text::new("logs.appStopped"));
 }
 #[cfg(test)]
 mod tests {
