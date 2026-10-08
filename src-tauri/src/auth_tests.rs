@@ -33,6 +33,8 @@ enum MockAuth {
     RejectOldEntry,
     TwoFactor,
     RotateEntry,
+    RevokedSession,
+    RegistriesDenied,
 }
 #[derive(Clone)]
 struct MockNas {
@@ -90,6 +92,7 @@ async fn upgrade(
 }
 async fn serve_mock(mut socket: WebSocket, state: MockNas) {
     let mut authenticated = false;
+    let mut entry_issued = false;
     while let Some(Ok(message)) = socket.recv().await {
         let text = match message {
             MockMessage::Text(text) => text,
@@ -174,6 +177,18 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
                 }
             }
             "appcgi.sac.entry.v1.exchangeEntryToken" => {
+                if state.auth_mode == MockAuth::RevokedSession && entry_issued {
+                    socket
+                        .send(MockMessage::Text(
+                            json!({"reqid":id,"result":"fail","errno":12345})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                    continue;
+                }
+                entry_issued = true;
                 let previous = payload["data"]["token"].as_str();
                 if state.auth_mode == MockAuth::RejectOldEntry && previous.is_some() {
                     json!({"reqid":id,"result":"fail","errno":12345})
@@ -190,6 +205,14 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
                 } else {
                     json!({"reqid":id,"result":"suc","data":{"token":"fixture-entry-token"}})
                 }
+            }
+            "appcgi.sac.entry.v1.getEntryList" | "appcgi.sac.entry.v1.dockerList"
+                if matches!(
+                    state.auth_mode,
+                    MockAuth::RevokedSession | MockAuth::RegistriesDenied
+                ) =>
+            {
+                json!({"reqid":id,"result":"fail","errno":12345})
             }
             "appcgi.sac.entry.v1.getEntryList" => {
                 json!({"reqid":id,"result":"suc","data":{"list":[{"entryKey":"fixture-app","title":"Fixture service","uri":{"port":"8084","fnDomain":"fixture-0"}},{"entryKey":"fixture-local","title":"Local-only fixture","uri":{"port":"9090"}},{"entryKey":"fixture-builtin","title":"Builtin fixture","uri":{"path":"/app/fixture"}}]}})
@@ -624,5 +647,60 @@ async fn missing_two_factor_is_classified_as_manual_intervention() {
     assert_eq!(e.text().code, "auth.tfaRequired");
     assert_eq!(e.stage(), "two_factor");
     assert!(!e.retryable());
+    server.abort();
+}
+
+#[tokio::test]
+async fn revoked_session_can_pong_but_rejects_inventory_and_both_token_exchanges() {
+    let (base, server) =
+        mock_server_with_auth(true, true, MockStream::Forbidden, MockAuth::RevokedSession).await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    session.rpc.lock().await.heartbeat().await.unwrap();
+    assert_eq!(
+        session.domain_inventory().await.err().unwrap().text().code,
+        "inventory.sourcesUnavailable"
+    );
+    let error = session.refresh_entry_token().await.unwrap_err();
+    assert_eq!(error.text().code, "auth.nasRejected");
+    assert_eq!(error.stage(), "entry_refresh");
+    session.rpc.lock().await.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn unavailable_registries_do_not_imply_revoked_session() {
+    let (base, server) = mock_server_with_auth(
+        true,
+        true,
+        MockStream::Forbidden,
+        MockAuth::RegistriesDenied,
+    )
+    .await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session.domain_inventory().await.err().unwrap().text().code,
+        "inventory.sourcesUnavailable"
+    );
+    // The recovery authentication probe succeeds: no password login is necessary.
+    session.refresh_entry_token().await.unwrap();
+    session.rpc.lock().await.close().await;
     server.abort();
 }

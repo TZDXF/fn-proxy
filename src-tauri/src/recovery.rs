@@ -23,6 +23,7 @@ pub enum RecoveryReason {
     HeartbeatFailed,
     EntryExpired,
     PeriodicRefresh,
+    DomainInventoryFailed,
 }
 impl RecoveryReason {
     fn label(self) -> &'static str {
@@ -31,10 +32,19 @@ impl RecoveryReason {
             Self::HeartbeatFailed => "heartbeat_failed",
             Self::EntryExpired => "entry_expired",
             Self::PeriodicRefresh => "periodic_refresh",
+            Self::DomainInventoryFailed => "domain_inventory_failed",
         }
     }
+    pub fn for_inventory_error(error: &AppError) -> Option<Self> {
+        // Neither a partial source permission failure nor malformed registry data
+        // alone proves logout. Probe authentication only when all sources failed.
+        (error.text().code == "inventory.sourcesUnavailable").then_some(Self::DomainInventoryFailed)
+    }
     pub fn refresh_first(self) -> bool {
-        matches!(self, Self::EntryExpired | Self::PeriodicRefresh)
+        matches!(
+            self,
+            Self::EntryExpired | Self::PeriodicRefresh | Self::DomainInventoryFailed
+        )
     }
 }
 pub type RecoveryHandler =
@@ -259,6 +269,16 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+
+    #[test]
+    fn unavailable_registries_probe_authentication_before_relogin() {
+        let reason =
+            RecoveryReason::for_inventory_error(&error("inventory.sourcesUnavailable")).unwrap();
+        assert_eq!(reason, RecoveryReason::DomainInventoryFailed);
+        assert!(reason.refresh_first());
+        assert_eq!(reason.label(), "domain_inventory_failed");
+        assert!(RecoveryReason::for_inventory_error(&error("inventory.listMissing")).is_none());
+    }
 
     fn transient() -> AppError {
         AppError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)).at("resolve")

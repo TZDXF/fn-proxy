@@ -497,10 +497,22 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
     );
     let manager = app.state::<Arc<AppState>>().inner().clone();
     tauri::async_runtime::spawn(async move {
+        let observed = state.recovery.generation();
         let initial = tokio::select! { _=cancel.cancelled()=>return, result=refresh_domains(&app, &manager, &state, &current)=>result };
         if let Err(e) = initial {
+            let recovery_reason = RecoveryReason::for_inventory_error(&e);
             state.log(&app, "warn", e.at("domain_inventory").diagnostic(1));
             report_domain_warnings(&app, &state, &[Text::new("logs.domainReadFailed")]);
+            if let Some(reason) = recovery_reason {
+                if state
+                    .recovery
+                    .maintain(reason, observed, &cancel)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
         }
         // Do not keep a stale session alive in this task after request-driven recovery.
         drop(current);
@@ -557,8 +569,25 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
             if domains_refreshed.elapsed() >= Duration::from_secs(60) {
                 let updated = tokio::select! { _=cancel.cancelled()=>break, result=refresh_domains(&app, &manager, &state, &current)=>result };
                 if let Err(e) = updated {
+                    // A pong only proves transport liveness. A revoked NAS session can
+                    // keep answering it while both authenticated registries reject requests.
+                    let recovery_reason = RecoveryReason::for_inventory_error(&e);
                     state.log(&app, "warn", e.at("domain_inventory").diagnostic(1));
                     report_domain_warnings(&app, &state, &[Text::new("logs.domainSyncFailed")]);
+                    if let Some(reason) = recovery_reason {
+                        if state
+                            .recovery
+                            .maintain(reason, observed, &cancel)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        generation = state.recovery.generation();
+                        refreshed = tokio::time::Instant::now();
+                        domains_refreshed = tokio::time::Instant::now();
+                        continue;
+                    }
                 }
                 domains_refreshed = tokio::time::Instant::now();
             }
