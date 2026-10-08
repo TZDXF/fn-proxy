@@ -290,7 +290,6 @@ export function useWorkspace() {
       // Do not clear new input entered while the request was in flight.
       if (target.password === (input.password ?? "")) target.password = "";
       if (target.otp === (input.otp ?? "")) target.otp = "";
-      notify(t("notice.connected"));
       await refresh();
       return true;
     } catch (error) {
@@ -338,6 +337,10 @@ export function useWorkspace() {
     });
   }
   async function discover() {
+    const connectionId = selectedConnectionId.value;
+    if (busy.value || current.value.connecting) return;
+    if (!formMatchesSession.value && !(await connect(connectionId))) return;
+    if (selectedConnectionId.value !== connectionId) return;
     await run("discover", async () => {
       inventory.value = null;
       inventory.value = await invoke<ServiceInventory>("get_service_inventory", {

@@ -109,3 +109,11 @@ describe("non-blocking connection controls", () => {
     expect(toggle).toContain("await w.toggleProxy(id)");
   });
 });
+
+describe("service discovery tab", () => {
+  it("automatically reads services when the open editor switches to discovery", () => {
+    expect(app).toContain("watch(serviceTab, async (tab) => {");
+    expect(app).toContain('if (tab === "discovery" && editing.value) await w.discover();');
+    expect(app).toContain('@click="w.discover()"');
+  });
+});

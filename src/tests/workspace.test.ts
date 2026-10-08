@@ -52,6 +52,44 @@ afterEach(() => {
 });
 
 describe("multiple connection workspaces", () => {
+  it("connects successfully without a success notification", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.password.value = "fixture-password";
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return info("my-nas");
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    expect(await w.connect()).toBe(true);
+    expect(w.connection.value.connected).toBe(true);
+    expect(w.notice.value).toBeNull();
+  });
+
+  it("does not read services when automatic connection fails", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    await w.discover();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(w.notice.value).not.toBeNull();
+  });
+  it("reads services directly for an existing matching session", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.connection.value = info("my-nas");
+    mocks.invoke.mockRejectedValue(new Error("fixture"));
+    await w.discover();
+    expect(mocks.invoke).toHaveBeenCalledWith("get_service_inventory", {
+      connectionId: w.selectedConnectionId.value,
+    });
+    expect(mocks.invoke).not.toHaveBeenCalledWith("connect_nas", expect.anything());
+  });
+
   it("switches profiles, inventories, probe results and running proxies without disconnecting", () => {
     const w = useWorkspace();
     const first = w.selectedConnectionId.value;

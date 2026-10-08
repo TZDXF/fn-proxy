@@ -75,6 +75,9 @@ const connectionOptions = computed(() =>
 const connectionDialog = ref(false);
 const connectionBackup = ref<Profile | null>(null);
 const serviceTab = ref("manual");
+watch(serviceTab, async (tab) => {
+  if (tab === "discovery" && editing.value) await w.discover();
+});
 const deleteTarget = ref<{ kind: "connection" | "service"; id: string; name: string } | null>(null);
 const time = (n: number) => new Date(n).toLocaleString(locale.value, { hour12: false });
 const cloneProfile = (p: Profile): Profile => ({
@@ -139,8 +142,12 @@ function showServices(id: string) {
   selectConnection(id);
   section.value = "services";
 }
-function newService(route?: ServiceRoute) {
+async function newService(route?: ServiceRoute) {
+  if (busy.value || connecting.value) return;
+  const connectionId = selectedConnectionId.value;
   notice.value = null;
+  if (!w.formMatchesSession.value && !(await w.connect(connectionId))) return;
+  if (selectedConnectionId.value !== connectionId) return;
   serviceTab.value = "manual";
   w.showEditor(route);
 }
@@ -740,13 +747,13 @@ async function confirmDelete() {
       <TabsContent value="discovery"
         ><div class="discovery-toolbar">
           <strong>{{ profile.fnId }}</strong
-          ><UiButton :disabled="!!busy || !connection.connected" @click="w.discover()"
+          ><UiButton :disabled="!!busy || connecting" @click="w.discover()"
             ><Icon name="refresh" />{{ busy ? t("common.reading") : t("service.read") }}</UiButton
           >
         </div>
         <div v-if="!inventory" class="empty-state compact">
           <Icon name="server" :size="30" />
-          <h3>{{ connection.connected ? t("service.notRead") : t("service.noNas") }}</h3>
+          <h3>{{ connecting ? t("connection.connecting") : t("service.notRead") }}</h3>
         </div>
         <template v-else
           ><div class="source-status">
