@@ -5,7 +5,6 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  dockerPortService,
   normalizeFnId,
   validateService,
   suggestedLocalPort,
@@ -16,7 +15,6 @@ import {
   type ProxyStatus,
   type DiscoveredService,
   type ServiceInventory,
-  type DockerPortRow,
   type ServiceRoute,
   type LogEntry,
   type RouteProbe,
@@ -365,13 +363,6 @@ export function useWorkspace() {
     });
     await commitEditor();
   }
-  async function addDockerPort(row: DockerPortRow) {
-    try {
-      await addDiscovered(dockerPortService(row));
-    } catch (error) {
-      notify(localizeError(error), true);
-    }
-  }
   function showEditor(route?: ServiceRoute) {
     Object.assign(
       editor,
@@ -608,7 +599,6 @@ export function useWorkspace() {
     copy,
     open,
     addDiscovered,
-    addDockerPort,
     localUrl,
   };
 }

@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 
 #[derive(Clone, Copy)]
 enum MockStream {
+    Forbidden,
     Complete,
     Denied,
     PartialFail,
@@ -143,6 +144,10 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
         }
         let id = &payload["reqid"];
         if payload["req"] == "appcgi.dockermgr.containerList" {
+            assert!(
+                !matches!(state.stream_mode, MockStream::Forbidden),
+                "service discovery must not enumerate containers"
+            );
             assert!(authenticated);
             assert_eq!(payload["all"], true);
             assert!(payload.get("data").is_none());
@@ -278,18 +283,8 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     assert_eq!(inventory.sources[1].status, "ok");
     assert_eq!(inventory.sources[1].count, Some(3));
     assert_eq!(inventory.services.len(), 2);
-    let ports = inventory.docker.as_ref().unwrap();
-    assert_eq!(ports.containers, 3);
-    assert_eq!(ports.published_ports, 5);
-    assert_eq!(ports.mapped_ports, 2);
-    assert_eq!(ports.unmapped_ports, 2);
-    assert_eq!(ports.rows.len(), 6);
-    assert_eq!(ports.rows.last().unwrap().status, "no-domain");
-    assert!(ports.rows.last().unwrap().upstream.is_none());
-    let exported = serde_json::to_string(&inventory).unwrap();
-    assert!(!exported.contains("fixture-secret-environment"));
-    assert!(!exported.contains("env"));
-    assert_eq!(inventory.sources[2].status, "ok");
+    assert!(inventory.docker.is_none());
+    assert_eq!(inventory.sources.len(), 2);
 
     let services = session.domain_inventory().await.unwrap().services;
     assert_eq!(services[0].nas_port, 8084);
@@ -540,8 +535,8 @@ async fn container_stream_errors_and_timeouts_never_return_partial_metadata() {
     }
 }
 #[tokio::test]
-async fn interrupted_container_source_preserves_registered_mappings_and_session() {
-    let (base, server) = mock_server_with_stream(true, true, MockStream::PartialFail).await;
+async fn service_inventory_does_not_request_container_list() {
+    let (base, server) = mock_server_with_stream(true, true, MockStream::Forbidden).await;
     let session = NasSession::login(
         base,
         "my-nas",
@@ -556,8 +551,7 @@ async fn interrupted_container_source_preserves_registered_mappings_and_session(
     assert_eq!(report.services.len(), 2);
     assert_eq!(report.total_entries, 6);
     assert!(report.docker.is_none());
-    assert_eq!(report.sources[2].status, "unavailable");
-    assert_eq!(report.sources[2].count, None);
+    assert_eq!(report.sources.len(), 2);
     session.rpc.lock().await.heartbeat().await.unwrap();
     session.rpc.lock().await.close().await;
     server.abort();

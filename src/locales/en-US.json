@@ -116,6 +116,8 @@
     "notRead": "No services loaded yet",
     "noNas": "NAS not connected",
     "noAvailable": "No services available to add",
+    "sourceNas": "NAS",
+    "sourceDocker": "Docker",
     "dockerPorts": "Docker ports"
   },
   "logs": {
@@ -261,6 +263,8 @@
       "disconnected": "The authentication connection dropped before the container list completed.",
       "overflow": "The container list response exceeded safety limits; truncated data is not treated as complete.",
       "invalidJson": "The container list contained invalid JSON.",
+      "schemaCandidates": "Container list is missing {path} (checked id/Id); candidate field types: {shape}. Partial results were not shown.",
+      "schemaDetail": "Incompatible container list: field {path} expected {expected}, received {actual}; partial results were not shown.",
       "schemaChanged": "The container list structure changed; unknown formats are not treated as an empty list.",
       "closedEarly": "The NAS closed the authentication connection before the container list completed.",
       "totalTimeout": "The container list exceeded its total time budget; partial segments were not returned.",

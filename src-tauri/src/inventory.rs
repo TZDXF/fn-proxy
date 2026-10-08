@@ -182,6 +182,7 @@ pub fn merge_inventories(
     })
 }
 
+#[cfg(test)]
 pub fn unavailable_registries() -> ServiceInventory {
     ServiceInventory {
         docker: None,

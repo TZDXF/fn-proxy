@@ -1,5 +1,6 @@
+#[cfg(test)]
+use crate::docker::{ContainerCollector, ContainerMetadata, StreamLimits, StreamMatch};
 use crate::{
-    docker::{ContainerCollector, ContainerMetadata, ContainerPacket, StreamLimits, StreamMatch},
     error::{error, error_with, AppError, Result},
     resolver::{browser_client, millis, BROWSER_UA},
     text::Text,
@@ -196,10 +197,7 @@ impl RpcClient {
         let id = self.send_request(method, arguments, encrypted).await?;
         self.receive(&id).await
     }
-    pub async fn list_containers(&mut self) -> Result<Vec<ContainerMetadata>> {
-        self.list_containers_with_limits(StreamLimits::default())
-            .await
-    }
+    #[cfg(test)]
     async fn list_containers_with_limits(
         &mut self,
         limits: StreamLimits,
@@ -227,8 +225,7 @@ impl RpcClient {
                         if header.reqid.as_ref().and_then(Value::as_str) != Some(id.as_str()) {
                             continue;
                         }
-                        let packet: ContainerPacket = serde_json::from_str(&text)
-                            .map_err(|_| error("containers.schemaChanged"))?;
+                        let packet = crate::docker::parse_container_packet(&text)?;
                         if collector.push(packet)? {
                             return collector.finish();
                         }
@@ -440,30 +437,9 @@ impl NasSession {
         crate::inventory::merge_inventories(desktop, docker)
     }
     pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {
-        let mut rpc = self.rpc.lock().await;
-        let desktop = rpc
-            .call(
-                "appcgi.sac.entry.v1.getEntryList",
-                json!({"data":{"language":"zh_CN"}}),
-                false,
-            )
-            .await
-            .and_then(|value| crate::inventory::parse_inventory(&value, &self.info.fn_id));
-        // The Docker iframe sends this request without a data field.
-        // This is the same read-only registry that powers its Quick Access menu.
-        let docker = rpc
-            .call("appcgi.sac.entry.v1.dockerList", json!({}), false)
-            .await
-            .and_then(|value| crate::inventory::parse_docker_inventory(&value, &self.info.fn_id));
-        let containers = rpc.list_containers().await;
-        // Successful port metadata is still useful even if both remote registries are unavailable.
-        let mut report = match crate::inventory::merge_inventories(desktop, docker) {
-            Ok(report) => report,
-            Err(e) if containers.is_err() => return Err(e),
-            Err(_) => crate::inventory::unavailable_registries(),
-        };
-        crate::docker::attach_container_ports(&mut report, containers);
-        Ok(report)
+        // Only registered desktop/Docker entries are useful for remote HTTP mappings.
+        // Do not enumerate containers when reading services.
+        self.domain_inventory().await
     }
     pub async fn refresh_entry_token(&self) -> Result<()> {
         let mut rpc = self.rpc.lock().await;

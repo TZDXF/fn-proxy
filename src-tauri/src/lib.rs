@@ -2,6 +2,7 @@ mod auth;
 mod commands;
 #[cfg(desktop)]
 mod desktop;
+#[cfg(test)]
 mod docker;
 mod error;
 mod inventory;

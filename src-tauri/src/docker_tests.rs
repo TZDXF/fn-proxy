@@ -219,3 +219,103 @@ fn null_or_missing_port_lists_are_empty_but_wrong_shapes_are_rejected() {
     )
     .is_err());
 }
+
+#[test]
+fn failed_inventory_preserves_specific_reason_without_partial_results() {
+    for code in [
+        "containers.idleTimeout",
+        "containers.denied",
+        "containers.schemaChanged",
+        "containers.missingSuccess",
+    ] {
+        let mut report = registries(json!([]));
+        attach_container_ports(&mut report, Err(error(code)));
+        let source = report.sources.last().unwrap();
+        assert_eq!(source.status, "unavailable");
+        assert_eq!(source.count, None);
+        assert_eq!(source.message.code, code);
+        assert!(report.docker.is_none());
+    }
+}
+
+#[test]
+fn failed_inventory_does_not_expose_raw_transport_details() {
+    let mut report = registries(json!([]));
+    attach_container_ports(
+        &mut report,
+        Err(std::io::Error::other("fixture-secret token=private").into()),
+    );
+    let source = report.sources.last().unwrap();
+    assert_eq!(source.message.code, "containers.disconnected");
+    assert!(!serde_json::to_string(source)
+        .unwrap()
+        .contains("fixture-secret"));
+}
+
+#[test]
+fn schema_diagnostics_identify_fields_without_exposing_values() {
+    for (value, path, actual) in [
+        (json!({"rsp":{"secret":"fixture-secret"}}), "rsp", "object"),
+        (
+            json!({"rsp":[{"id":"fixture-secret", "state":null}]}),
+            "rsp[0].state",
+            "null",
+        ),
+        (json!({"rsp":[{"id":42}]}), "rsp[0].id", "number"),
+        (
+            json!({"rsp":[{"id":"fixture-secret", "ports":[{"type":42}]}]}),
+            "rsp[0].ports[0].type",
+            "number",
+        ),
+    ] {
+        let err = match parse_container_packet(&value.to_string()) {
+            Err(err) => err,
+            Ok(_) => panic!("invalid schema accepted"),
+        };
+        let text = err.text();
+        assert_eq!(text.code, "containers.schemaDetail");
+        assert_eq!(text.params["path"], path);
+        assert_eq!(text.params["actual"], actual);
+        assert!(!serde_json::to_string(&text)
+            .unwrap()
+            .contains("fixture-secret"));
+    }
+    assert!(parse_container_packet(
+        r#"{"result":"succ","rsp":[{"id":"fixture","names":null,"ports":null}]}"#
+    )
+    .is_ok());
+}
+
+#[test]
+fn capitalized_container_metadata_preserves_ports_and_terminal() {
+    let packet = parse_container_packet(
+        &json!({"result":"succ", "rsp":[{
+            "Id":"fixture-id", "Names":["/fixture"], "State":"running",
+            "Ports":[{"PublicPort":8084,"PrivatePort":80,"Type":"tcp","IP":"127.0.0.1"}]
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut collector = ContainerCollector::new(StreamLimits::default());
+    assert!(collector.push(packet).unwrap());
+    let items = collector.finish().unwrap();
+    assert_eq!(items[0].id, "fixture-id");
+    assert_eq!(items[0].ports[0].public_port, Some(8084));
+    assert_eq!(items[0].ports[0].private_port, Some(80));
+    assert_eq!(items[0].ports[0].protocol, "tcp");
+}
+#[test]
+fn missing_id_diagnostics_are_allowlisted_and_duplicate_aliases_rejected() {
+    for value in [
+        json!({"rsp":[{"id":"a","Id":"b"}]}),
+        json!({"rsp":[{"containerId":"fixture-secret","private-key":"fixture-secret"}]}),
+    ] {
+        let err = match parse_container_packet(&value.to_string()) {
+            Err(err) => err,
+            Ok(_) => panic!("invalid schema accepted"),
+        };
+        let diagnostic = serde_json::to_string(&err.text()).unwrap();
+        assert!(!diagnostic.contains("fixture-secret"));
+        assert!(!diagnostic.contains("private-key"));
+    }
+}

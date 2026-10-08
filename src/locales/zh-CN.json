@@ -116,6 +116,8 @@
     "notRead": "尚未读取服务",
     "noNas": "未连接 NAS",
     "noAvailable": "暂无可添加服务",
+    "sourceNas": "NAS",
+    "sourceDocker": "Docker",
     "dockerPorts": "Docker 端口"
   },
   "logs": {
@@ -261,6 +263,8 @@
       "disconnected": "容器列表未完成前认证连接断开",
       "overflow": "容器清单响应超过安全上限；未截断后冒充完整结果",
       "invalidJson": "容器清单收到无效 JSON",
+      "schemaCandidates": "容器列表缺少字段 {path}（已检查 id/Id）；候选字段类型：{shape}。未展示分段残留",
+      "schemaDetail": "容器列表结构不兼容：字段 {path} 预期 {expected}，实际 {actual}；未展示分段残留",
       "schemaChanged": "容器列表返回结构变化，未把未知格式当作空清单",
       "closedEarly": "容器列表未完成前 NAS 关闭认证连接",
       "totalTimeout": "容器清单总等待时间超限；未返回分段残留",

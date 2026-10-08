@@ -12,8 +12,7 @@ import UiSwitch from "./components/ui/UiSwitch.vue";
 import UiSelect from "./components/ui/UiSelect.vue";
 import UiDialog from "./components/ui/UiDialog.vue";
 import {
-  dockerPortStatus,
-  dockerPortService,
+  discoverySources,
   suggestedLocalPort,
   type Profile,
   type DiscoveredService,
@@ -755,22 +754,30 @@ async function confirmDelete() {
           <Icon name="server" :size="30" />
           <h3>{{ connecting ? t("connection.connecting") : t("service.notRead") }}</h3>
         </div>
-        <template v-else
-          ><div class="source-status">
-            <span
-              v-for="source in inventory.sources"
-              :key="source.id"
-              :class="['badge', source.status === 'ok' ? 'success' : 'error']"
-              :title="localize(source.message)"
-              >{{ localize(source.name) }} ·
-              {{ source.status === "ok" ? (source.count ?? 0) : t("common.unavailable") }}</span
-            >
-          </div>
+        <template v-else>
+          <template v-for="source in inventory.sources" :key="`${source.id}-error`">
+            <p v-if="source.status !== 'ok'" class="source-error" role="status">
+              <strong>{{ localize(source.name) }}：</strong>{{ localize(source.message) }}
+            </p>
+          </template>
           <div class="discovered-list">
             <div v-for="service in discovered" :key="service.id" class="discovered-row">
               <div>
-                <strong>{{ service.name }}</strong
-                ><span class="cell-sub">:{{ service.nasPort }} · {{ service.upstream }}</span>
+                <strong>{{ service.name }}</strong>
+                <span
+                  v-for="source in discoverySources(service, inventory.entries)"
+                  :key="source.code"
+                  class="badge"
+                >
+                  {{
+                    t(
+                      source.code === "inventory.sourceDocker"
+                        ? "service.sourceDocker"
+                        : "service.sourceNas",
+                    )
+                  }}
+                </span>
+                <span class="cell-sub">:{{ service.nasPort }} · {{ service.upstream }}</span>
               </div>
               <UiButton
                 :disabled="profile.services.some((s) => s.nasPort === service.nasPort)"
@@ -786,33 +793,7 @@ async function confirmDelete() {
               <h3>{{ t("service.noAvailable") }}</h3>
             </div>
           </div>
-          <template v-if="inventory.docker"
-            ><h3 class="subsection-title">{{ t("service.dockerPorts") }}</h3>
-            <div class="discovered-list">
-              <div v-for="row in inventory.docker.rows" :key="row.id" class="discovered-row">
-                <div>
-                  <strong>{{ row.containerName }}</strong
-                  ><span class="cell-sub"
-                    >{{ row.nasPort ?? "—" }} → {{ row.containerPort ?? "—" }}/{{ row.protocol }} ·
-                    {{ dockerPortStatus(row.status) }}</span
-                  >
-                </div>
-                <UiButton
-                  :disabled="
-                    row.status !== 'mapped' ||
-                    profile.services.some((s) => s.nasPort === row.nasPort)
-                  "
-                  @click="chooseService(dockerPortService(row))"
-                  >{{
-                    profile.services.some((s) => s.nasPort === row.nasPort)
-                      ? t("common.added")
-                      : t("common.select")
-                  }}</UiButton
-                >
-              </div>
-            </div></template
-          ></template
-        ></TabsContent
+        </template></TabsContent
       >
     </TabsRoot>
   </UiDialog>

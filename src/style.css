@@ -850,12 +850,6 @@ td strong {
   margin-bottom: 16px;
   font-size: 13px;
 }
-.source-status {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin-bottom: 17px;
-}
 .discovered-list {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1340,4 +1334,10 @@ td strong {
   .theme-current {
     padding: 0 18px 18px;
   }
+}
+
+.source-error {
+  margin: 0 0 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }

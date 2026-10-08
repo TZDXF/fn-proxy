@@ -198,3 +198,21 @@ export function dockerPortStatus(status: DockerPortRow["status"]): string {
     ambiguous: i18n.global.t("docker.ambiguous"),
   }[status];
 }
+
+/** Preserve both registry labels when the selectable service is deduplicated. */
+export function discoverySources(
+  service: DiscoveredService,
+  entries: InventoryEntry[],
+): BackendText[] {
+  const sources = new Map<string, BackendText>();
+  for (const entry of entries) {
+    if (
+      entry.status === "mapped" &&
+      entry.nasPort === service.nasPort &&
+      entry.upstream === service.upstream
+    ) {
+      sources.set(entry.source.code, entry.source);
+    }
+  }
+  return [...sources.values()];
+}
