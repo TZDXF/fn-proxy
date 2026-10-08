@@ -42,6 +42,19 @@ async fn echo(request: Request) -> Response {
         .body(Body::from(result.to_string()))
         .unwrap()
 }
+// Simulate the relay rejecting an expired entry credential, independently of RPC health.
+async fn entry_gate(headers: HeaderMap) -> Response {
+    let authorized = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        == Some("entry-token=fixture-entry-token");
+    let status = if authorized {
+        StatusCode::OK
+    } else {
+        StatusCode::FORBIDDEN
+    };
+    (status, "fixture relay authorization result").into_response()
+}
 async fn ws_echo(headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     assert_eq!(
         headers.get(header::COOKIE).unwrap(),
@@ -78,6 +91,7 @@ async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
     let upstream = url::Url::parse(&format!("http://{}/", service.local_addr().unwrap())).unwrap();
     let service_app = Router::new()
         .route("/echo", any(echo))
+        .route("/entry-gate", any(entry_gate))
         .route("/ws", any(ws_echo))
         .route(
             "/redirect",
@@ -204,6 +218,60 @@ async fn rejects_untrusted_hosts_origins_and_disconnected_sessions() {
             .unwrap()
             .status(),
         401
+    );
+}
+#[tokio::test]
+async fn expired_entry_credential_is_not_recovered_by_a_healthy_rpc_heartbeat() {
+    let f = fixture().await;
+    let client = reqwest::Client::new();
+    let session = f.hub.read().await.clone().unwrap();
+    let url = f.local.join("entry-gate").unwrap();
+    assert_eq!(client.get(url.clone()).send().await.unwrap().status(), 200);
+
+    // Credential validity can change while the authenticated control socket stays healthy.
+    *session.entry_token.write().await =
+        zeroize::Zeroizing::new("fixture-expired-entry-token".to_owned());
+    session.rpc.lock().await.heartbeat().await.unwrap();
+    for _ in 0..2 {
+        let response = client.get(url.clone()).send().await.unwrap();
+        assert_eq!(response.status(), 403);
+        assert_eq!(
+            response.text().await.unwrap(),
+            "fixture relay authorization result"
+        );
+    }
+    assert_eq!(
+        session.entry_token.read().await.as_str(),
+        "fixture-expired-entry-token"
+    );
+
+    // Explicit refresh recovers service access without replacing the RPC session.
+    session.refresh_entry_token().await.unwrap();
+    assert_eq!(client.get(url).send().await.unwrap().status(), 200);
+}
+#[tokio::test]
+async fn cross_site_navigation_is_rejected_even_with_valid_host_and_session() {
+    let f = fixture().await;
+    let client = reqwest::Client::new();
+    let url = f.local.join("entry-gate").unwrap();
+    assert_eq!(client.get(url.clone()).send().await.unwrap().status(), 200);
+    let response = client
+        .get(url)
+        .header("sec-fetch-site", "cross-site")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "document")
+        .header("sec-fetch-user", "?1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["code"], "hostNotAllowed");
+    // The local denial does not mean that the upstream service credential is invalid.
+    let session = f.hub.read().await.clone().unwrap();
+    assert_eq!(
+        session.entry_token.read().await.as_str(),
+        "fixture-entry-token"
     );
 }
 #[tokio::test]
