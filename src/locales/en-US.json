@@ -131,6 +131,12 @@
     "confirmDelete": "Confirm deletion"
   },
   "settings": {
+    "proxy": "Proxy",
+    "general": "General",
+    "startup": "Startup",
+    "startupDescription": "Choose how proxies behave when the app starts",
+    "autoStartProxy": "Start proxies automatically",
+    "autoStartProxyDescription": "Start proxies with saved passwords when the app opens, not at system startup.",
     "description": "Manage the interface language, appearance, and proxy access scope. Settings are saved automatically on this device.",
     "language": "Language",
     "languageDescription": "Choose the language used throughout the app.",
@@ -152,9 +158,9 @@
     "allowLanAccess": "Allow LAN access",
     "lanEnabled": "Enabled: proxies listen on 0.0.0.0 and accept access via this computer’s LAN IPv4 address.",
     "lanDisabled": "Disabled: proxies listen on 127.0.0.1 and accept access only from this computer.",
-    "lanAddress": "Other devices can use http://LAN-IP:mapped-port/ after enabling this option. If the connection fails, check that the system firewall allows the port.",
-    "lanWarning": "Enable only on trusted networks. The LAN endpoint has no additional password and shares service credentials from the current NAS session. Do not forward these ports to the public internet.",
-    "stopProxiesFirst": "Stop the proxies for all connections before changing LAN access."
+    "lanAddress": "Access via http://local-LAN-IP:mapped-port/",
+    "lanWarning": "Applies to all connections. Trusted networks only: no extra password, shared NAS credentials. Never expose to the internet.",
+    "stopProxiesFirst": "Stop all proxies to change this setting."
   },
   "notice": {
     "preview": "This is a UI preview. Run npm run desktop:dev to sign in and enable the proxy in the desktop app.",
@@ -163,7 +169,6 @@
     "saved": "Connection saved",
     "credentialsRemoved": "The password for this connection is no longer saved. Other connections and the current session are unaffected.",
     "disconnected": "The connection and local proxy have stopped.",
-    "discovered": "Loaded {count} services",
     "alreadyAdded": "This service has already been added",
     "servicesSaved": "Service mappings saved",
     "proxyStopped": "Local proxy stopped.",
@@ -372,6 +377,7 @@
       "servicesUpdated": "Service mappings were updated.",
       "proxyStopped": "Local proxy listeners for this connection stopped.",
       "connectionRemoved": "The connection was deleted; its proxies and saved credentials were cleaned up.",
+      "autoStartProxyFailed": "Failed to start proxies automatically. Check service settings or port conflicts.",
       "autoConnectFailed": "Automatic sign-in at startup failed. Check the network or re-enter credentials."
     },
     "proxy": {

@@ -23,6 +23,8 @@ fn default_connection_id() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfiles {
     #[serde(default)]
+    pub auto_start_proxy: bool,
+    #[serde(default)]
     pub allow_lan_access: bool,
     pub profiles: Vec<Profile>,
 }
@@ -116,6 +118,7 @@ pub struct ServiceInventory {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
+    pub auto_start_proxy: bool,
     pub allow_lan_access: bool,
     pub profiles: Vec<SavedProfile>,
 }

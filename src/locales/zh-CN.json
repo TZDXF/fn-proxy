@@ -131,6 +131,12 @@
     "confirmDelete": "确认删除"
   },
   "settings": {
+    "proxy": "代理",
+    "general": "通用",
+    "startup": "启动设置",
+    "startupDescription": "设置应用启动时的代理行为",
+    "autoStartProxy": "启动时自动开启代理",
+    "autoStartProxyDescription": "打开应用后，使用已保存的密码启动代理；非开机自启。",
     "description": "管理界面语言、外观和代理访问范围。设置会自动保存在此设备。",
     "language": "语言",
     "languageDescription": "选择应用的显示语言。",
@@ -152,9 +158,9 @@
     "allowLanAccess": "允许局域网访问",
     "lanEnabled": "已开启：代理监听 0.0.0.0，可通过本机局域网 IPv4 地址访问。",
     "lanDisabled": "已关闭：代理仅监听 127.0.0.1，只允许本机访问。",
-    "lanAddress": "开启后，其他设备使用 http://本机局域网IP:映射端口/ 访问；如无法连接，请检查系统防火墙是否允许该端口。",
-    "lanWarning": "仅在可信网络开启。局域网入口没有额外密码，访问者会共用当前 NAS 会话的服务凭据；请勿将端口映射到公网。",
-    "stopProxiesFirst": "请先停止所有连接的代理，再修改局域网访问设置。"
+    "lanAddress": "访问地址：http://本机局域网IP:映射端口/",
+    "lanWarning": "适用于所有连接。仅限可信网络：无额外密码，共用 NAS 凭据，勿暴露到公网。",
+    "stopProxiesFirst": "停止所有连接的代理后可修改。"
   },
   "notice": {
     "preview": "当前是界面预览。请运行 npm run desktop:dev，在桌面应用中登录和启用代理。",
@@ -163,7 +169,6 @@
     "saved": "连接已保存",
     "credentialsRemoved": "当前连接不再保存密码，其他连接和当前会话不受影响。",
     "disconnected": "连接和本地代理已停止。",
-    "discovered": "已读取 {count} 个服务",
     "alreadyAdded": "此服务已添加",
     "servicesSaved": "服务映射已保存",
     "proxyStopped": "本地代理已停止。",
@@ -372,6 +377,7 @@
       "servicesUpdated": "服务映射已更新",
       "proxyStopped": "当前连接的本地代理监听已停止",
       "connectionRemoved": "连接已删除，本连接的代理和保存凭据已清理",
+      "autoStartProxyFailed": "启动时自动开启代理失败，请检查服务配置或端口占用",
       "autoConnectFailed": "启动时自动登录失败，请检查网络或重新输入凭据"
     },
     "proxy": {

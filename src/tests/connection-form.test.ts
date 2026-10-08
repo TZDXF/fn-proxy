@@ -15,13 +15,23 @@ describe("connection form", () => {
 
   it("keeps password saving and connection test/save actions", () => {
     expect(form).toContain('v-model="profile.remember"');
-    expect(form).toContain('@click="w.connect()"');
+    expect(form).toContain('@click="w.testConnection()"');
     expect(form).toContain('type="submit"');
     expect(form).toContain("!$event && (profile.autoConnect = false)");
   });
 });
 
 describe("connection actions", () => {
+  it("clears stale notices when manually opening the editor but preserves startup errors", () => {
+    const edit = app.match(
+      /function editConnection\(id: string, preserveNotice = false\) \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(edit).toContain("if (!preserveNotice) notice.value = null;");
+    expect(edit!.indexOf("notice.value = null")).toBeLessThan(
+      edit!.indexOf("connectionDialog.value = true"),
+    );
+  });
+
   it("saves the form without testing or connecting first", () => {
     const save = app.match(/async function saveConnection\(\) \{([\s\S]*?)\n\}/)?.[1];
     expect(save).toContain("await w.save()");
@@ -69,8 +79,8 @@ describe("connection actions", () => {
     expect(toggle).toContain("selectedConnectionId.value === id");
     expect(toggle).toContain("section.value === originSection");
     expect(toggle).toContain("!connectionDialog.value");
-    expect(toggle).toContain("editConnection(id)");
-    expect(toggle).toMatch(/editConnection\(id\);\s*return;/);
+    expect(toggle).toContain("editConnection(id, true)");
+    expect(toggle).toMatch(/editConnection\(id, true\);\s*return;/);
     expect(toggle).toContain("await w.toggleProxy(id)");
     expect(toggle).not.toContain("w.save()");
   });

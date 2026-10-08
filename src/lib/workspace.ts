@@ -96,6 +96,14 @@ export function useWorkspace() {
   const savedConnections = computed(() => connections.filter((c) => c.saved));
   const busy = ref("");
   const allowLanAccess = ref(false);
+  const autoStartProxy = ref(false);
+  async function setAutoStartProxy(enabled: boolean) {
+    if (!settingsReady.value || busy.value) return;
+    await run("auto-start-proxy", async () => {
+      await invoke("set_auto_start_proxy", { enabled });
+      autoStartProxy.value = enabled;
+    });
+  }
   const settingsReady = ref(false);
   const anyProxyRunning = computed(() => connections.some((c) => c.proxy.running));
   async function setAllowLanAccess(enabled: boolean) {
@@ -297,6 +305,14 @@ export function useWorkspace() {
       target.connecting = false;
     }
   }
+  async function testConnection() {
+    const connectionId = selectedConnectionId.value;
+    notice.value = null;
+    const connected = await connect(connectionId);
+    if (connected && !disposed && selectedConnectionId.value === connectionId)
+      notify(t("notice.connected"));
+    return connected;
+  }
   async function save() {
     return await run("save", async () => {
       profile.value.fnId = normalizeFnId(profile.value.fnId);
@@ -345,7 +361,6 @@ export function useWorkspace() {
         connectionId: selectedConnectionId.value,
       });
       await refresh();
-      notify(t("notice.discovered", { count: discovered.value.length }));
       section.value = "services";
     });
   }
@@ -514,10 +529,12 @@ export function useWorkspace() {
     try {
       await syncTrayLabels();
       const bootstrap = await invoke<{
+        autoStartProxy: boolean;
         allowLanAccess: boolean;
         profiles: { profile: Profile; hasSavedPassword: boolean }[];
       }>("get_bootstrap");
       allowLanAccess.value = bootstrap.allowLanAccess === true;
+      autoStartProxy.value = bootstrap.autoStartProxy === true;
       if (bootstrap.profiles.length) {
         connections.splice(
           0,
@@ -557,6 +574,8 @@ export function useWorkspace() {
   return {
     desktop,
     allowLanAccess,
+    autoStartProxy,
+    setAutoStartProxy,
     settingsReady,
     anyProxyRunning,
     setAllowLanAccess,
@@ -585,6 +604,7 @@ export function useWorkspace() {
     formMatchesSession,
     connecting,
     connect,
+    testConnection,
     save,
     forget,
     disconnect,

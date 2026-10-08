@@ -8,18 +8,23 @@ import UiSelect from "./ui/UiSelect.vue";
 import UiSwitch from "./ui/UiSwitch.vue";
 
 defineProps<{
+  autoStartProxy: boolean;
+  startupDisabled: boolean;
   allowLanAccess: boolean;
   networkDisabled: boolean;
   anyProxyRunning: boolean;
 }>();
-const emit = defineEmits<{ "update:allowLanAccess": [value: boolean] }>();
+const emit = defineEmits<{
+  "update:allowLanAccess": [value: boolean];
+  "update:autoStartProxy": [value: boolean];
+}>();
 import { preferences, type AppLocale, type ThemeMode } from "../lib/preferences";
 
 const { t } = useI18n({ useScope: "global" });
 const updates = createUpdates();
 const { version, state, latest, errorKey, checking, opening, openFailed, versionFailed } = updates;
 onMounted(() => void updates.initialize());
-const { locale, theme, resolvedTheme } = preferences;
+const { locale, theme } = preferences;
 const languages = [
   { value: "zh-CN", label: "简体中文" },
   { value: "en-US", label: "English" },
@@ -29,19 +34,16 @@ const themes = computed(() => [
     value: "light" as const,
     icon: "sun",
     label: t("settings.light"),
-    description: t("settings.lightDescription"),
   },
   {
     value: "dark" as const,
     icon: "moon",
     label: t("settings.dark"),
-    description: t("settings.darkDescription"),
   },
   {
     value: "system" as const,
     icon: "monitor",
     label: t("settings.system"),
-    description: t("settings.systemDescription"),
   },
 ]);
 function selectLocale(value: string) {
@@ -54,19 +56,61 @@ function selectTheme(event: Event) {
 
 <template>
   <div class="settings-page">
-    <p class="settings-description">{{ t("settings.description") }}</p>
-    <section class="panel settings-panel" aria-labelledby="network-heading">
-      <div class="panel-heading settings-panel-heading">
-        <span class="settings-icon"><Icon name="server" :size="21" /></span>
-        <div>
-          <h2 id="network-heading">{{ t("settings.network") }}</h2>
-          <p>{{ t("settings.networkDescription") }}</p>
-        </div>
+    <section class="panel settings-panel" aria-labelledby="general-heading">
+      <h2 id="general-heading">{{ t("settings.general") }}</h2>
+      <div class="settings-row">
+        <span>{{ t("settings.displayLanguage") }}</span>
+        <UiSelect
+          :model-value="locale"
+          :options="languages"
+          :label="t('settings.displayLanguage')"
+          @update:model-value="selectLocale"
+        />
       </div>
-      <div class="settings-language-row settings-network-row">
+      <div class="settings-row">
+        <span id="theme-label">{{ t("settings.theme") }}</span>
+        <fieldset class="theme-options" aria-labelledby="theme-label">
+          <label
+            v-for="option in themes"
+            :key="option.value"
+            :class="['theme-option', { selected: theme === option.value }]"
+          >
+            <input
+              type="radio"
+              name="theme"
+              :value="option.value"
+              :checked="theme === option.value"
+              @change="selectTheme"
+            />
+            <Icon :name="option.icon" :size="16" />
+            {{ option.label }}
+          </label>
+        </fieldset>
+      </div>
+    </section>
+    <section class="panel settings-panel" aria-labelledby="proxy-heading">
+      <h2 id="proxy-heading">{{ t("settings.proxy") }}</h2>
+      <div class="settings-row">
+        <div>
+          <label for="auto-start-proxy">{{ t("settings.autoStartProxy") }}</label>
+          <p class="settings-hint">{{ t("settings.autoStartProxyDescription") }}</p>
+        </div>
+        <UiSwitch
+          id="auto-start-proxy"
+          :model-value="autoStartProxy"
+          :disabled="startupDisabled"
+          :label="t('settings.autoStartProxy')"
+          @update:model-value="emit('update:autoStartProxy', $event)"
+        />
+      </div>
+      <div class="settings-row">
         <div>
           <label for="allow-lan-access">{{ t("settings.allowLanAccess") }}</label>
-          <p>{{ t(allowLanAccess ? "settings.lanEnabled" : "settings.lanDisabled") }}</p>
+          <p class="settings-hint">{{ t("settings.lanWarning") }}</p>
+          <p v-if="allowLanAccess" class="settings-hint">{{ t("settings.lanAddress") }}</p>
+          <p v-if="anyProxyRunning" class="settings-warning" role="status">
+            {{ t("settings.stopProxiesFirst") }}
+          </p>
         </div>
         <UiSwitch
           id="allow-lan-access"
@@ -76,83 +120,20 @@ function selectTheme(event: Event) {
           @update:model-value="emit('update:allowLanAccess', $event)"
         />
       </div>
-      <div class="settings-network-hints">
-        <p>{{ t("settings.lanAddress") }}</p>
-        <p>{{ t("settings.lanWarning") }}</p>
-        <p v-if="anyProxyRunning" class="settings-network-warning" role="status">
-          {{ t("settings.stopProxiesFirst") }}
-        </p>
-      </div>
-    </section>
-    <section class="panel settings-panel" aria-labelledby="language-heading">
-      <div class="panel-heading settings-panel-heading">
-        <span class="settings-icon"><Icon name="globe" :size="21" /></span>
-        <div>
-          <h2 id="language-heading">{{ t("settings.language") }}</h2>
-          <p>{{ t("settings.languageDescription") }}</p>
-        </div>
-      </div>
-      <div class="settings-language-row">
-        <span id="language-label">{{ t("settings.displayLanguage") }}</span>
-        <UiSelect
-          :model-value="locale"
-          :options="languages"
-          :label="t('settings.displayLanguage')"
-          @update:model-value="selectLocale"
-        />
-      </div>
-    </section>
-    <section class="panel settings-panel" aria-labelledby="appearance-heading">
-      <div class="panel-heading settings-panel-heading">
-        <span class="settings-icon"><Icon name="sun" :size="21" /></span>
-        <div>
-          <h2 id="appearance-heading">{{ t("settings.appearance") }}</h2>
-          <p>{{ t("settings.appearanceDescription") }}</p>
-        </div>
-      </div>
-      <fieldset class="theme-options">
-        <legend class="sr-only">{{ t("settings.theme") }}</legend>
-        <label
-          v-for="option in themes"
-          :key="option.value"
-          :class="['theme-option', { selected: theme === option.value }]"
-        >
-          <input
-            type="radio"
-            name="theme"
-            :value="option.value"
-            :checked="theme === option.value"
-            @change="selectTheme"
-          />
-          <span :class="['theme-preview', `preview-${option.value}`]" aria-hidden="true"
-            ><span class="preview-sidebar" /><span class="preview-main"
-              ><span /><span /><span /></span
-          ></span>
-          <span class="theme-option-title"
-            ><Icon :name="option.icon" :size="17" />{{ option.label
-            }}<Icon v-if="theme === option.value" name="check" :size="16"
-          /></span>
-          <span class="theme-option-description">{{ option.description }}</span>
-        </label>
-      </fieldset>
-      <p class="theme-current">
-        {{ t("settings.currentTheme", { theme: t(`settings.${resolvedTheme}`) }) }}
-      </p>
     </section>
     <section class="panel settings-panel" aria-labelledby="updates-heading">
-      <div class="panel-heading settings-panel-heading">
-        <span class="settings-icon"><Icon name="info" :size="21" /></span>
+      <h2 id="updates-heading">{{ t("updates.title") }}</h2>
+      <div class="settings-row">
         <div>
-          <h2 id="updates-heading">{{ t("updates.title") }}</h2>
-          <p>{{ t("updates.description") }}</p>
+          <span>{{ t("updates.currentVersion") }}</span>
+          <strong class="update-version">{{
+            version ? "v" + version : t("common.reading")
+          }}</strong>
         </div>
-      </div>
-      <div class="settings-language-row update-version-row">
-        <span>{{ t("updates.currentVersion") }}</span>
-        <strong>{{ version ? "v" + version : t("common.reading") }}</strong>
-      </div>
-      <div class="update-content">
         <div class="update-actions">
+          <UiButton :disabled="opening" @click="updates.openRelease">
+            {{ t(state === "available" ? "updates.download" : "updates.releasePage") }}
+          </UiButton>
           <UiButton
             variant="primary"
             :disabled="checking || !updates.desktop"
@@ -161,12 +142,15 @@ function selectTheme(event: Event) {
             <Icon name="refresh" :size="16" />
             {{ t(checking ? "updates.checking" : "updates.check") }}
           </UiButton>
-          <UiButton :disabled="opening" @click="updates.openRelease">
-            <Icon name="external" :size="16" />
-            {{ t(state === "available" ? "updates.download" : "updates.releasePage") }}
-          </UiButton>
         </div>
-        <p class="update-status" role="status" aria-live="polite">
+      </div>
+      <div class="update-content">
+        <p
+          v-if="state !== 'idle' || !updates.desktop"
+          class="update-status"
+          role="status"
+          aria-live="polite"
+        >
           {{
             !updates.desktop
               ? t("updates.preview")
@@ -179,43 +163,120 @@ function selectTheme(event: Event) {
           {{ t("updates.versionError") }}
         </p>
         <p v-if="openFailed" class="update-error" role="alert">{{ t("updates.openError") }}</p>
-        <p class="update-hint">{{ t("updates.manualInstall") }}</p>
       </div>
     </section>
-    <p class="settings-saved"><Icon name="check" :size="16" />{{ t("settings.saved") }}</p>
   </div>
 </template>
 
 <style scoped>
-.update-version-row {
-  padding-bottom: 12px;
+.settings-page {
+  max-width: 920px;
 }
-.update-version-row strong {
-  color: var(--text);
+.settings-panel {
+  margin-bottom: 20px;
+  padding: 0 24px;
 }
-.update-content {
-  padding: 0 24px 24px;
+.settings-panel h2 {
+  padding: 18px 0 4px;
+  font-size: 14px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 0;
+  font-size: 13px;
+}
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line);
+}
+.settings-row .select-trigger {
+  min-width: 210px;
+}
+.settings-row .switch {
+  flex-shrink: 0;
+}
+.settings-hint,
+.settings-warning,
+.update-status,
+.update-error {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.settings-hint,
+.update-status {
+  color: var(--text-muted);
+}
+.settings-warning {
+  color: var(--accent);
+}
+.theme-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  margin: 0;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.theme-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.theme-option:hover {
+  background: var(--surface-subtle);
+}
+.theme-option.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.theme-option:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.theme-option input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.update-version {
+  margin-left: 10px;
 }
 .update-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
 }
-.update-status,
-.update-hint,
-.update-error {
-  font-size: 12px;
-  line-height: 1.7;
-  margin-top: 12px;
-  overflow-wrap: anywhere;
-}
-.update-status {
-  color: var(--text-secondary);
-}
-.update-hint {
-  color: var(--text-muted);
+.update-content:has(> p) {
+  padding-bottom: 18px;
 }
 .update-error {
   color: var(--danger);
+}
+@media (max-width: 600px) {
+  .settings-panel {
+    padding: 0 18px;
+  }
+  .settings-row {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .settings-row:has(.switch) {
+    flex-wrap: nowrap;
+  }
+  .settings-row .select-trigger {
+    min-width: 150px;
+  }
 }
 </style>

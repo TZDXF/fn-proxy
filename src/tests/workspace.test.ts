@@ -67,6 +67,74 @@ describe("multiple connection workspaces", () => {
     expect(w.notice.value).toBeNull();
   });
 
+  it.each([0, 13])("reads %i services without a success notification", async (count) => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.connection.value = info("my-nas");
+    const inventory = {
+      docker: null,
+      sources: [],
+      totalEntries: count,
+      mappedEntries: count,
+      unmappedEntries: 0,
+      services: Array.from({ length: count }, (_, index) => service(8084 + index)),
+      entries: [],
+      scope: { code: "fixture" },
+    };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_service_inventory") return inventory;
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    await w.discover();
+    expect(w.inventory.value).toEqual(inventory);
+    expect(w.discovered.value).toHaveLength(count);
+    expect(w.section.value).toBe("services");
+    expect(w.notice.value).toBeNull();
+    expect(w.busy.value).toBe("");
+  });
+
+  it("reports an explicit connection test success instead of a stale proxy notice", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.password.value = "fixture-password";
+    w.notice.value = { message: "本地代理已停止。", error: false };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") return info("my-nas");
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    const testing = w.testConnection();
+    expect(w.notice.value).toBeNull();
+    expect(await testing).toBe(true);
+    expect(w.notice.value).toEqual({ message: "连接成功", error: false });
+  });
+
+  it("reports an explicit connection test failure with its reason", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.password.value = "fixture-password";
+    w.notice.value = { message: "代理已启动", error: false };
+    mocks.invoke.mockRejectedValue(new Error("login failed"));
+    expect(await w.testConnection()).toBeUndefined();
+    expect(w.notice.value).toEqual({ message: "login failed", error: true });
+    expect(w.connecting.value).toBe(false);
+  });
+
+  it("reports missing credentials when testing a connection", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    expect(await w.testConnection()).toBeUndefined();
+    expect(w.notice.value).toEqual({ message: "请输入 NAS 密码", error: true });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
   it("does not read services when automatic connection fails", async () => {
     mocks.desktop = true;
     const w = useWorkspace();
@@ -88,6 +156,7 @@ describe("multiple connection workspaces", () => {
       connectionId: w.selectedConnectionId.value,
     });
     expect(mocks.invoke).not.toHaveBeenCalledWith("connect_nas", expect.anything());
+    expect(w.notice.value).toEqual({ message: "fixture", error: true });
   });
 
   it("switches profiles, inventories, probe results and running proxies without disconnecting", () => {
@@ -890,5 +959,58 @@ describe("fixed NAS port domain cache", () => {
     await w.commitEditor();
     expect(w.profile.value.services[0]!.upstream).toBe("https://new.my-nas.fnos.net/");
     expect(w.profile.value.services[0]!.localPort).toBe(18084);
+  });
+});
+
+describe("automatic proxy startup settings", () => {
+  it("defaults to disabled and blocks changes before backend state is ready", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    expect(w.autoStartProxy.value).toBe(false);
+    expect(w.settingsReady.value).toBe(false);
+    await w.setAutoStartProxy(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+  it("restores the backend setting even when no connections have been saved", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_bootstrap") return { autoStartProxy: true, profiles: [] };
+      if (command === "get_snapshot") return { connections: [] };
+      if (command === "get_logs") return [];
+    });
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    expect(w.autoStartProxy.value).toBe(true);
+    expect(w.settingsReady.value).toBe(true);
+  });
+  it("saves only through backend IPC and updates the switch after success", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    let complete!: () => void;
+    mocks.invoke.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const saved = w.setAutoStartProxy(true);
+    expect(w.busy.value).toBe("auto-start-proxy");
+    expect(w.autoStartProxy.value).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("set_auto_start_proxy", { enabled: true });
+    complete();
+    await saved;
+    expect(w.autoStartProxy.value).toBe(true);
+    expect(w.busy.value).toBe("");
+  });
+  it("keeps the previous setting and reports a failed save", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockRejectedValue(new Error("save failed"));
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    await w.setAutoStartProxy(true);
+    expect(w.autoStartProxy.value).toBe(false);
+    expect(w.notice.value).toEqual({ message: "save failed", error: true });
+    expect(w.busy.value).toBe("");
   });
 });

@@ -53,6 +53,7 @@ pub fn run() {
             updates::check_for_updates,
             commands::get_bootstrap,
             commands::set_allow_lan_access,
+            commands::set_auto_start_proxy,
             commands::get_snapshot,
             commands::get_logs,
             commands::connect_nas,

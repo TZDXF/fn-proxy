@@ -90,8 +90,9 @@ function newConnection() {
   connectionBackup.value = null;
   connectionDialog.value = true;
 }
-function editConnection(id: string) {
+function editConnection(id: string, preserveNotice = false) {
   if (busy.value) return;
+  if (!preserveNotice) notice.value = null;
   selectedConnectionId.value = id;
   connectionBackup.value = cloneProfile(profile.value);
   connectionDialog.value = true;
@@ -132,7 +133,7 @@ async function toggleConnectionProxy(id: string) {
       section.value === originSection &&
       !connectionDialog.value
     )
-      editConnection(id);
+      editConnection(id, true);
     return;
   }
   await w.toggleProxy(id);
@@ -579,6 +580,9 @@ async function confirmDelete() {
         >
         <TabsContent value="settings" class="page-content">
           <SettingsPage
+            :auto-start-proxy="w.autoStartProxy.value"
+            :startup-disabled="!desktop || !settingsReady || Boolean(busy)"
+            @update:auto-start-proxy="w.setAutoStartProxy"
             :allow-lan-access="allowLanAccess"
             :network-disabled="!desktop || !settingsReady || Boolean(busy) || anyProxyRunning"
             :any-proxy-running="anyProxyRunning"
@@ -661,7 +665,7 @@ async function confirmDelete() {
         <UiButton
           :disabled="!!busy || connecting || proxy.running"
           :aria-busy="connecting"
-          @click="w.connect()"
+          @click="w.testConnection()"
           >{{ connecting ? t("connection.connecting") : t("connection.test") }}</UiButton
         ><UiButton variant="primary" type="submit" :disabled="!!busy">{{
           busy === "save" ? t("common.saving") : t("connection.save")

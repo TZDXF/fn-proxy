@@ -18,6 +18,7 @@ pub fn load_profiles(path: &Path) -> Result<WorkspaceProfiles> {
     match serde_json::from_slice(&std::fs::read(path)?)? {
         StoredProfiles::Workspace(workspace) => Ok(workspace),
         StoredProfiles::Legacy(profile) => Ok(WorkspaceProfiles {
+            auto_start_proxy: false,
             allow_lan_access: false,
             profiles: vec![profile],
         }),
@@ -131,6 +132,7 @@ mod tests {
         let file = ConfigFile::new();
         assert!(load_profiles(&file.0).unwrap().profiles.is_empty());
         let mut workspace = WorkspaceProfiles {
+            auto_start_proxy: false,
             allow_lan_access: false,
             profiles: vec![
                 Profile {
@@ -158,6 +160,7 @@ mod tests {
         let file = ConfigFile::new();
         std::fs::write(&file.0, br#"{"profiles":[]}"#).unwrap();
         let mut workspace = load_profiles(&file.0).unwrap();
+        assert!(!workspace.auto_start_proxy);
         assert!(!workspace.allow_lan_access);
         workspace.allow_lan_access = true;
         save_profiles(&file.0, &workspace).unwrap();

@@ -102,6 +102,7 @@ impl ConnectionState {
     }
 }
 pub struct AppState {
+    auto_start_proxy: AtomicBool,
     allow_lan_access: AtomicBool,
     pub profile_path: PathBuf,
     connections: StdMutex<BTreeMap<String, Arc<ConnectionState>>>,
@@ -130,6 +131,7 @@ impl AppState {
         }
         Self {
             allow_lan_access: AtomicBool::new(workspace.allow_lan_access),
+            auto_start_proxy: AtomicBool::new(workspace.auto_start_proxy),
             profile_path,
             connections: StdMutex::new(connections),
             operation: Mutex::new(()),
@@ -199,6 +201,7 @@ impl AppState {
             replacement,
             removed,
             self.allow_lan_access.load(Ordering::Relaxed),
+            self.auto_start_proxy.load(Ordering::Relaxed),
         )
     }
     fn persist_with_access(
@@ -206,6 +209,7 @@ impl AppState {
         replacement: Option<&Profile>,
         removed: Option<&str>,
         allow_lan_access: bool,
+        auto_start_proxy: bool,
     ) -> Result<()> {
         let mut profiles: Vec<Profile> = self
             .all()
@@ -225,6 +229,7 @@ impl AppState {
             &WorkspaceProfiles {
                 profiles,
                 allow_lan_access,
+                auto_start_proxy,
             },
         )
     }
@@ -609,6 +614,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
 #[tauri::command]
 pub fn get_bootstrap(state: State<'_, Arc<AppState>>) -> Bootstrap {
     Bootstrap {
+        auto_start_proxy: state.auto_start_proxy.load(Ordering::Relaxed),
         allow_lan_access: state.allow_lan_access.load(Ordering::Relaxed),
         profiles: state
             .all()
@@ -636,9 +642,29 @@ async fn set_lan_access(manager: &AppState, enabled: bool) -> Result<()> {
         }
     }
     // Save first: a failed write must not change the effective listening policy.
-    manager.persist_with_access(None, None, enabled)?;
+    manager.persist_with_access(
+        None,
+        None,
+        enabled,
+        manager.auto_start_proxy.load(Ordering::Relaxed),
+    )?;
     manager.allow_lan_access.store(enabled, Ordering::Relaxed);
     Ok(())
+}
+async fn set_auto_start(manager: &AppState, enabled: bool) -> Result<()> {
+    let _workspace_guard = manager.operation.lock().await;
+    manager.persist_with_access(
+        None,
+        None,
+        manager.allow_lan_access.load(Ordering::Relaxed),
+        enabled,
+    )?;
+    manager.auto_start_proxy.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+#[tauri::command]
+pub async fn set_auto_start_proxy(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<()> {
+    set_auto_start(state.inner(), enabled).await
 }
 #[tauri::command]
 pub async fn set_allow_lan_access(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<()> {
@@ -925,9 +951,16 @@ pub async fn start_proxy(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     connection_id: String,
+    services: Vec<ServiceRoute>,
+) -> Result<ProxyStatus> {
+    start_proxy_internal(app, state.inner().clone(), connection_id, services).await
+}
+async fn start_proxy_internal(
+    app: AppHandle,
+    manager: Arc<AppState>,
+    connection_id: String,
     mut services: Vec<ServiceRoute>,
 ) -> Result<ProxyStatus> {
-    let manager = state.inner().clone();
     let _workspace_guard = manager.operation.lock().await;
     let state = manager.connection(&connection_id)?;
 
@@ -1154,13 +1187,20 @@ pub async fn remove_connection(
     connection.log(&app, "info", Text::new("logs.connectionRemoved"));
     Ok(())
 }
+fn should_auto_connect(profile: &Profile, auto_start: bool) -> bool {
+    profile.remember
+        && (profile.auto_connect
+            || (auto_start && profile.services.iter().any(|route| route.enabled)))
+}
 pub fn auto_connect(app: AppHandle, manager: Arc<AppState>) {
+    let auto_start = manager.auto_start_proxy.load(Ordering::Relaxed);
     for state in manager.all() {
         let profile = state.profile();
-        if !profile.auto_connect || !profile.remember {
+        if !should_auto_connect(&profile, auto_start) {
             continue;
         }
         let app = app.clone();
+        let manager = manager.clone();
         tauri::async_runtime::spawn(async move {
             let _guard = state.operation.lock().await;
             let input = ConnectInput {
@@ -1173,6 +1213,18 @@ pub fn auto_connect(app: AppHandle, manager: Arc<AppState>) {
             if let Err(e) = establish(&app, &state, input).await {
                 state.info.write().unwrap().message = e.text();
                 state.log(&app, "error", Text::new("logs.autoConnectFailed"));
+                return;
+            }
+            // Release the connection lock before taking the workspace lock in the shared start path.
+            drop(_guard);
+            if auto_start && profile.services.iter().any(|route| route.enabled) {
+                if let Err(e) =
+                    start_proxy_internal(app.clone(), manager, state.id.clone(), profile.services)
+                        .await
+                {
+                    state.log(&app, "error", Text::new("logs.autoStartProxyFailed"));
+                    state.log(&app, "error", e.text());
+                }
             }
         });
     }
@@ -1205,6 +1257,7 @@ mod tests {
                 rand::random::<u64>()
             )),
             WorkspaceProfiles {
+                auto_start_proxy: false,
                 allow_lan_access: false,
                 profiles: vec![
                     Profile {
@@ -1385,6 +1438,60 @@ mod tests {
             &manager.ensure_connection("draft").unwrap()
         ));
         assert!(!Arc::ptr_eq(&draft, &manager.connection("first").unwrap()));
+    }
+    #[test]
+    fn automatic_start_requires_saved_credentials_and_enabled_routes() {
+        let mut profile = Profile::default();
+        assert!(!should_auto_connect(&profile, true));
+        profile.remember = true;
+        assert!(!should_auto_connect(&profile, true));
+        profile.services.push(ServiceRoute {
+            id: "test".into(),
+            name: "Test".into(),
+            nas_port: 8080,
+            local_port: 8080,
+            upstream: "https://test.example/".into(),
+            enabled: true,
+        });
+        assert!(should_auto_connect(&profile, true));
+        assert!(!should_auto_connect(&profile, false));
+        profile.remember = false;
+        assert!(!should_auto_connect(&profile, true));
+        profile.remember = true;
+        profile.services[0].enabled = false;
+        assert!(!should_auto_connect(&profile, true));
+        profile.auto_connect = true;
+        assert!(should_auto_connect(&profile, false));
+    }
+    #[tokio::test]
+    async fn auto_start_setting_persists_and_survives_other_setting_changes() {
+        let manager = manager();
+        assert!(!manager.auto_start_proxy.load(Ordering::Relaxed));
+        set_auto_start(&manager, true).await.unwrap();
+        set_lan_access(&manager, true).await.unwrap();
+        manager.persist(None, None).unwrap();
+        let stored = storage::load_profiles(&manager.profile_path).unwrap();
+        assert!(stored.auto_start_proxy);
+        assert!(stored.allow_lan_access);
+        let restored = AppState::new(manager.profile_path.clone(), stored);
+        assert!(restored.auto_start_proxy.load(Ordering::Relaxed));
+        set_auto_start(&restored, false).await.unwrap();
+        assert!(
+            !storage::load_profiles(&manager.profile_path)
+                .unwrap()
+                .auto_start_proxy
+        );
+        let _ = std::fs::remove_file(&manager.profile_path);
+    }
+    #[tokio::test]
+    async fn auto_start_save_failure_preserves_effective_setting() {
+        let mut manager = manager();
+        let blocker = manager.profile_path.clone();
+        std::fs::write(&blocker, "not a directory").unwrap();
+        manager.profile_path = blocker.join("profile.json");
+        assert!(set_auto_start(&manager, true).await.is_err());
+        assert!(!manager.auto_start_proxy.load(Ordering::Relaxed));
+        std::fs::remove_file(blocker).unwrap();
     }
     #[tokio::test]
     async fn lan_setting_is_restored_and_profile_saves_preserve_it() {
