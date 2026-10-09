@@ -1,6 +1,6 @@
 [package]
 name = "fn-proxy"
-version = "0.1.1"
+version = "0.1.2"
 description = "FN Connect authenticated local reverse proxy"
 authors = ["FN Proxy contributors"]
 edition = "2021"
