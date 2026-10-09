@@ -133,6 +133,10 @@
     "confirmDelete": "确认删除"
   },
   "settings": {
+    "launchAtLogin": "开机自启",
+    "launchAtLoginDescription": "登录系统后自动打开 FN Proxy；代理是否自动开启由下方设置控制。",
+    "launchAtLoginReadFailed": "无法读取开机自启状态，请重新打开应用后重试。",
+    "launchAtLoginSaveFailed": "无法修改开机自启设置，请检查系统权限后重试。",
     "proxy": "代理",
     "general": "通用",
     "startup": "启动设置",

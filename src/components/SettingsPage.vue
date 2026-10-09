@@ -9,6 +9,8 @@ import UiSwitch from "./ui/UiSwitch.vue";
 
 const { updates } = defineProps<{
   updates: ReturnType<typeof createUpdates>;
+  launchAtLogin: boolean;
+  launchAtLoginDisabled: boolean;
   autoStartProxy: boolean;
   startupDisabled: boolean;
   allowLanAccess: boolean;
@@ -16,6 +18,7 @@ const { updates } = defineProps<{
   anyProxyRunning: boolean;
 }>();
 const emit = defineEmits<{
+  "update:launchAtLogin": [value: boolean];
   "update:allowLanAccess": [value: boolean];
   "update:autoStartProxy": [value: boolean];
 }>();
@@ -58,6 +61,19 @@ function selectTheme(event: Event) {
   <div class="settings-page">
     <section class="panel settings-panel" aria-labelledby="general-heading">
       <h2 id="general-heading">{{ t("settings.general") }}</h2>
+      <div class="settings-row">
+        <div>
+          <label for="launch-at-login">{{ t("settings.launchAtLogin") }}</label>
+          <p class="settings-hint">{{ t("settings.launchAtLoginDescription") }}</p>
+        </div>
+        <UiSwitch
+          id="launch-at-login"
+          :model-value="launchAtLogin"
+          :disabled="launchAtLoginDisabled"
+          :label="t('settings.launchAtLogin')"
+          @update:model-value="emit('update:launchAtLogin', $event)"
+        />
+      </div>
       <div class="settings-row">
         <span>{{ t("settings.displayLanguage") }}</span>
         <UiSelect

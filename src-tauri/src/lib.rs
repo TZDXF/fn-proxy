@@ -19,8 +19,10 @@ use std::sync::Arc;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
+    let app = builder
         .setup(|app| {
             let path = app.path().app_config_dir()?.join("profile.json");
             let profile = storage::load_profiles(&path).unwrap_or_default();
@@ -67,6 +69,8 @@ pub fn run() {
             commands::start_proxy,
             commands::update_services,
             commands::stop_proxy,
+            desktop::get_launch_at_login,
+            desktop::set_launch_at_login,
             desktop::set_tray_labels,
             commands::remove_connection
         ])

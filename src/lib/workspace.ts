@@ -97,6 +97,14 @@ export function useWorkspace() {
   const busy = ref("");
   const allowLanAccess = ref(false);
   const autoStartProxy = ref(false);
+  const launchAtLogin = ref(false);
+  const launchAtLoginReady = ref(false);
+  async function setLaunchAtLogin(enabled: boolean) {
+    if (!launchAtLoginReady.value || busy.value) return;
+    await run("launch-at-login", async () => {
+      launchAtLogin.value = await invoke<boolean>("set_launch_at_login", { enabled });
+    });
+  }
   async function setAutoStartProxy(enabled: boolean) {
     if (!settingsReady.value || busy.value) return;
     await run("auto-start-proxy", async () => {
@@ -527,6 +535,12 @@ export function useWorkspace() {
   onMounted(async () => {
     if (!desktop) return;
     try {
+      launchAtLogin.value = await invoke<boolean>("get_launch_at_login");
+      launchAtLoginReady.value = true;
+    } catch {
+      notify(t("settings.launchAtLoginReadFailed"), true);
+    }
+    try {
       await syncTrayLabels();
       const bootstrap = await invoke<{
         autoStartProxy: boolean;
@@ -576,6 +590,9 @@ export function useWorkspace() {
     allowLanAccess,
     autoStartProxy,
     setAutoStartProxy,
+    launchAtLogin,
+    launchAtLoginReady,
+    setLaunchAtLogin,
     settingsReady,
     anyProxyRunning,
     setAllowLanAccess,

@@ -12,6 +12,19 @@ describe("compact settings page", () => {
     expect(page).not.toContain('t("settings.saved")');
   });
 
+  it("adds launch at login to general settings without coupling it to proxy startup", () => {
+    const general = page.slice(
+      page.indexOf('aria-labelledby="general-heading"'),
+      page.indexOf('aria-labelledby="proxy-heading"'),
+    );
+    expect(general).toContain('id="launch-at-login"');
+    expect(general).toContain(':model-value="launchAtLogin"');
+    expect(general).toContain(':disabled="launchAtLoginDisabled"');
+    expect(general).toContain("emit('update:launchAtLogin', $event)");
+    expect(general).toContain('t("settings.launchAtLoginDescription")');
+    expect(general).not.toContain('id="auto-start-proxy"');
+  });
+
   it("preserves proxy controls, safety guidance and running-state restrictions", () => {
     expect(page).toContain(':disabled="startupDisabled"');
     expect(page).toContain(':disabled="networkDisabled"');

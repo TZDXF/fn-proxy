@@ -133,6 +133,10 @@
     "confirmDelete": "Confirm deletion"
   },
   "settings": {
+    "launchAtLogin": "Launch at login",
+    "launchAtLoginDescription": "Open FN Proxy automatically when you sign in. Automatic proxy startup is controlled separately below.",
+    "launchAtLoginReadFailed": "Unable to read the launch-at-login status. Reopen the app to try again.",
+    "launchAtLoginSaveFailed": "Unable to change launch-at-login settings. Check system permissions and try again.",
     "proxy": "Proxy",
     "general": "General",
     "startup": "Startup",

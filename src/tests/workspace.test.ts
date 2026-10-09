@@ -1014,3 +1014,119 @@ describe("automatic proxy startup settings", () => {
     expect(w.busy.value).toBe("");
   });
 });
+
+describe("launch at login settings", () => {
+  function mockBootstrap(enabled: boolean) {
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_launch_at_login") return enabled;
+      if (command === "get_bootstrap") return { autoStartProxy: false, profiles: [] };
+      if (command === "get_snapshot") return { connections: [] };
+      if (command === "get_logs") return [];
+    });
+  }
+
+  it("defaults to disabled and blocks changes before the system status is read", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    expect(w.launchAtLogin.value).toBe(false);
+    expect(w.launchAtLoginReady.value).toBe(false);
+    await w.setLaunchAtLogin(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("does not read or change system settings in browser preview", async () => {
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    await w.setLaunchAtLogin(true);
+    expect(w.launchAtLoginReady.value).toBe(false);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "reads the actual system setting (%s) independently of proxy startup",
+    async (enabled) => {
+      mocks.desktop = true;
+      mockBootstrap(enabled);
+      const w = useWorkspace();
+      await mocks.mounted[0]!();
+      expect(mocks.invoke).toHaveBeenCalledWith("get_launch_at_login");
+      expect(w.launchAtLogin.value).toBe(enabled);
+      expect(w.launchAtLoginReady.value).toBe(true);
+      expect(w.autoStartProxy.value).toBe(false);
+      expect(w.settingsReady.value).toBe(true);
+    },
+  );
+
+  it("keeps the switch disabled after a failed read without blocking other settings", async () => {
+    mocks.desktop = true;
+    mockBootstrap(false);
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "get_launch_at_login")
+        return Promise.reject({ code: "settings.launchAtLoginReadFailed" });
+      return original(command);
+    });
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    expect(w.launchAtLoginReady.value).toBe(false);
+    expect(w.settingsReady.value).toBe(true);
+    expect(w.notice.value?.error).toBe(true);
+    expect(w.notice.value?.message).not.toBe("settings.launchAtLoginReadFailed");
+    mocks.invoke.mockClear();
+    await w.setLaunchAtLogin(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "updates the switch only after the system confirms the change (%s)",
+    async (enabled) => {
+      mocks.desktop = true;
+      const w = useWorkspace();
+      w.launchAtLoginReady.value = true;
+      w.launchAtLogin.value = !enabled;
+      let complete!: (result: boolean) => void;
+      mocks.invoke.mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            complete = resolve;
+          }),
+      );
+      const saved = w.setLaunchAtLogin(enabled);
+      expect(w.busy.value).toBe("launch-at-login");
+      expect(w.launchAtLogin.value).toBe(!enabled);
+      expect(mocks.invoke).toHaveBeenCalledWith("set_launch_at_login", { enabled });
+      await w.setLaunchAtLogin(!enabled);
+      expect(mocks.invoke).toHaveBeenCalledTimes(1);
+      complete(enabled);
+      await saved;
+      expect(w.launchAtLogin.value).toBe(enabled);
+      expect(w.autoStartProxy.value).toBe(false);
+      expect(w.busy.value).toBe("");
+    },
+  );
+
+  it("uses the returned system state rather than assuming a write took effect", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockResolvedValue(false);
+    const w = useWorkspace();
+    w.launchAtLoginReady.value = true;
+    await w.setLaunchAtLogin(true);
+    expect(w.launchAtLogin.value).toBe(false);
+  });
+
+  it.each([true, false])(
+    "preserves the previous state and reports a localized write failure (%s)",
+    async (enabled) => {
+      mocks.desktop = true;
+      mocks.invoke.mockRejectedValue({ code: "settings.launchAtLoginSaveFailed" });
+      const w = useWorkspace();
+      w.launchAtLoginReady.value = true;
+      w.launchAtLogin.value = !enabled;
+      await w.setLaunchAtLogin(enabled);
+      expect(w.launchAtLogin.value).toBe(!enabled);
+      expect(w.notice.value?.error).toBe(true);
+      expect(w.notice.value?.message).not.toBe("settings.launchAtLoginSaveFailed");
+      expect(w.busy.value).toBe("");
+    },
+  );
+});

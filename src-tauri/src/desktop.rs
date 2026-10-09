@@ -1,9 +1,11 @@
+use crate::text::Text;
 use serde::Deserialize;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     App, AppHandle, Manager, State, Window, WindowEvent,
 };
+use tauri_plugin_autostart::ManagerExt;
 
 const TRAY_ID: &str = "main-tray";
 const MAIN_WINDOW: &str = "main";
@@ -22,6 +24,25 @@ pub struct TrayHandles {
     show: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
     tray: TrayIcon<tauri::Wry>,
+}
+
+#[tauri::command]
+pub fn get_launch_at_login(app: AppHandle) -> Result<bool, Text> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|_| Text::new("settings.launchAtLoginReadFailed"))
+}
+
+#[tauri::command]
+pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<bool, Text> {
+    let manager = app.autolaunch();
+    let result = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    result.map_err(|_| Text::new("settings.launchAtLoginSaveFailed"))?;
+    get_launch_at_login(app)
 }
 
 #[tauri::command]

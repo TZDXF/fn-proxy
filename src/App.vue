@@ -598,6 +598,9 @@ async function confirmDelete() {
         >
         <TabsContent value="settings" class="page-content">
           <SettingsPage
+            :launch-at-login="w.launchAtLogin.value"
+            :launch-at-login-disabled="!desktop || !w.launchAtLoginReady.value || Boolean(busy)"
+            @update:launch-at-login="w.setLaunchAtLogin"
             :auto-start-proxy="w.autoStartProxy.value"
             :startup-disabled="!desktop || !settingsReady || Boolean(busy)"
             @update:auto-start-proxy="w.setAutoStartProxy"
