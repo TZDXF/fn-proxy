@@ -95,6 +95,8 @@
     "delete": "删除 {name}"
   },
   "service": {
+    "nasMain": "NAS 主入口",
+    "nasMainHint": "映射 NAS 主域名，保留路径并支持 WebSocket。443 表示远程 HTTPS 入口，不代表 NAS 内部监听端口；默认本地端口为 18000。",
     "added": "已添加服务",
     "empty": "暂无服务映射",
     "name": "服务名称",
@@ -189,7 +191,7 @@
     "serviceName": "请输入服务名称",
     "port": "端口需为 1–65535 的整数",
     "https": "请输入完整的 HTTPS 服务地址",
-    "upstream": "服务地址必须是当前 NAS 的 FN Connect 子域名根地址，且不含凭据或查询参数",
+    "upstream": "服务地址必须是当前 NAS 的 FN Connect 主域名或子域名根地址，且不含凭据或查询参数",
     "noPort": "没有可建议的本地端口",
     "dockerMapping": "该记录尚未取得明确的 TCP 端口与远程域名关联，不能创建代理映射"
   },
@@ -398,7 +400,7 @@
     "route": {
       "fnIdInvalid": "FN ID 只能包含字母、数字和单个连字符",
       "httpsRequired": "请输入完整的 HTTPS 服务地址",
-      "upstreamInvalid": "服务地址必须属于当前 NAS 的 FN Connect 子域名，使用 HTTPS，且不能包含凭据、查询参数或片段",
+      "upstreamInvalid": "服务地址必须属于当前 NAS 的 FN Connect 主域名或子域名，使用 HTTPS，且不能包含凭据、查询参数或片段",
       "subdomainInvalid": "服务子域名格式无效",
       "rootAddressRequired": "请填写服务域名根地址；API 路径在访问本地代理时追加",
       "tooManyServices": "最多配置 32 个服务",

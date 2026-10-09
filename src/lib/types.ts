@@ -144,7 +144,8 @@ export function validateService(route: ServiceRoute, fnId: string): void {
   }
   if (
     url.protocol !== "https:" ||
-    !url.hostname.endsWith(`.${normalizeFnId(fnId)}.fnos.net`) ||
+    (url.hostname !== `${normalizeFnId(fnId)}.fnos.net` &&
+      !url.hostname.endsWith(`.${normalizeFnId(fnId)}.fnos.net`)) ||
     url.username ||
     url.password ||
     url.search ||

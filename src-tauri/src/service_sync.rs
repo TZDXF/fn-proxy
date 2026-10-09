@@ -26,6 +26,13 @@ pub fn reconcile(routes: &[ServiceRoute], inventory: &ServiceInventory, fn_id: &
         return result;
     }
     for route in &mut result.routes {
+        // The NAS main endpoint is fixed, not a registry-provided port mapping.
+        if validate_upstream(&route.upstream, fn_id)
+            .ok()
+            .is_some_and(|url| url.host_str() == Some(format!("{fn_id}.fnos.net").as_str()))
+        {
+            continue;
+        }
         let candidates: BTreeSet<String> = inventory
             .services
             .iter()
@@ -83,6 +90,16 @@ mod tests {
             parse_docker_inventory(&json!({"data":{"list":docker}}), "my-nas"),
         )
         .unwrap()
+    }
+    #[test]
+    fn main_endpoint_is_not_replaced_by_a_registered_service() {
+        let report = inventory(json!([{"uri":{"port":443,"fnDomain":"app"}}]), json!([]));
+        let mut main = route(443);
+        main.upstream = "https://my-nas.fnos.net/".into();
+        let result = reconcile(&[main.clone()], &report, "my-nas");
+        assert_eq!(result.routes[0].upstream, main.upstream);
+        assert_eq!(result.changed, 0);
+        assert!(result.warnings.is_empty());
     }
     #[test]
     fn refreshes_by_nas_port_and_preserves_all_other_settings() {

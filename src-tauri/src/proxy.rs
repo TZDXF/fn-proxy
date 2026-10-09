@@ -978,6 +978,22 @@ mod tests {
         );
     }
     #[test]
+    fn main_domain_redirect_keeps_path_and_query() {
+        let upstream = url::Url::parse("https://my-nas.fnos.net/").unwrap();
+        assert_eq!(
+            rewrite_location(
+                "https://my-nas.fnos.net/apps/docker/?view=all",
+                &upstream,
+                "127.0.0.1:18000"
+            ),
+            "http://127.0.0.1:18000/apps/docker/?view=all"
+        );
+        assert_eq!(
+            rewrite_location("https://app.my-nas.fnos.net/", &upstream, "127.0.0.1:18000"),
+            "https://app.my-nas.fnos.net/"
+        );
+    }
+    #[test]
     fn gateway_cookies_never_reach_local_clients() {
         assert!(rewrite_cookie("entry-token=private; Path=/").is_none());
         assert_eq!(

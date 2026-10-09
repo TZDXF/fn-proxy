@@ -129,3 +129,11 @@ if (isFnConnect && uri.fnDomain && uri.port) {
 `appcgi.dockermgr.containerList` 使用顶层 `all:true`，不附加 `data`。与普通单响应 RPC 不同，它通过多条同 `reqid` 的 `rsp` 数组分段返回。应用独立汇总这些包、按容器 ID 合并端口绑定，直到 `result:"succ"`（兼容 `suc`）才允许展示。`doing` / 无 result 不视为完成；错误状态、断线、总超时、分段空闲或超过安全上限均报告失败，不能返回部分结果冒充全部。
 
 读取只保留容器 ID、名称、状态和端口元数据，不获取详情/环境变量/日志。域名关联必须同时匹配容器前缀和宿主机端口；Docker 注册来源失败时关联为未知，多个匹配域名或容器时为歧义。没有匹配的域名不会自行生成。UDP、仅容器暴露端口、host 网络模式监听端口与 NAS 非 Docker 服务不等价于可经 FN Connect 代理的 HTTP 入口。参数与分段行为来自公开 Docker 前端，真实账号权限与版本结构尚待验收。详见 [Docker 快捷访问调查](docker-discovery.md)。
+
+## NAS 主入口映射（2026-10-09）
+
+新增服务弹窗提供“NAS 主入口”预设，上游为 `https://{FNID}.fnos.net/`，默认本地端口为 18000（占用时顺延）。预设 NAS 端口 443 表示远程 HTTPS 入口，不是探测或推断 NAS 内部监听端口。
+
+主域名映射沿用 HTTP/WebSocket 代理，保留请求路径与查询参数，包括 `/apps/docker/`、`/websocket?type=main`。主域名严格限定为当前连接的 FN ID，保持 HTTPS、凭据、端口及根地址校验。注册列表同步不会将主入口替换为同端口的应用子域名。
+
+本映射不代理跳往其他域名的应用入口，也不保证将桌面应用中的 NAS 登录状态自动传入浏览器；NAS 页面登录和原生应用认证是不同的会话。

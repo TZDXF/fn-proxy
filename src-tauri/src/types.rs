@@ -202,10 +202,11 @@ pub fn normalize_fnid(input: &str) -> Result<String> {
 }
 pub fn validate_upstream(input: &str, fn_id: &str) -> Result<url::Url> {
     let url = url::Url::parse(input.trim()).map_err(|_| error("route.httpsRequired"))?;
-    let suffix = format!(".{fn_id}.fnos.net");
+    let root = format!("{fn_id}.fnos.net");
+    let suffix = format!(".{root}");
     let host = url.host_str().unwrap_or_default();
     if url.scheme() != "https"
-        || !host.ends_with(&suffix)
+        || (host != root && !host.ends_with(&suffix))
         || url.username() != ""
         || url.password().is_some()
         || url.port().is_some_and(|p| p != 443)
@@ -214,12 +215,14 @@ pub fn validate_upstream(input: &str, fn_id: &str) -> Result<url::Url> {
     {
         return Err(error("route.upstreamInvalid"));
     }
-    if !host[..host.len() - suffix.len()].split('.').all(|label| {
-        !label.is_empty()
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    }) {
+    if host != root
+        && !host[..host.len() - suffix.len()].split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+    {
         return Err(error("route.subdomainInvalid"));
     }
     if url.path() != "/" && !url.path().is_empty() {
@@ -254,8 +257,12 @@ mod tests {
     #[test]
     fn upstream_rejects_ssrf_and_suffix_confusion() {
         assert!(validate_upstream("https://hash-0.my-nas.fnos.net/", "my-nas").is_ok());
+        assert!(validate_upstream("https://my-nas.fnos.net/", "my-nas").is_ok());
         for s in [
             "https://my-nas.fnos.net.evil.test/",
+            "https://other-nas.fnos.net/",
+            "https://my-nas.fnos.net:8443/",
+            "https://my-nas.fnos.net/?token=secret",
             "http://hash.my-nas.fnos.net/",
             "https://127.0.0.1/",
             "https://hash.my-nas.fnos.net/?token=secret",

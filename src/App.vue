@@ -155,6 +155,20 @@ async function newService(route?: ServiceRoute) {
   serviceTab.value = "manual";
   w.showEditor(route);
 }
+function chooseNasMain() {
+  chooseService({
+    id: "nas-main",
+    name: t("service.nasMain"),
+    nasPort: 443,
+    upstream: `https://${profile.value.fnId.trim().toLowerCase()}.fnos.net/`,
+    fnDomain: "",
+    source: { code: "service.nasMain", params: {} },
+  });
+  editor.localPort = suggestedLocalPort(
+    18000,
+    w.connections.flatMap((c) => c.profile.services.map((s) => s.localPort)),
+  );
+}
 function chooseService(service: DiscoveredService) {
   w.showEditor({
     id: "",
@@ -692,7 +706,11 @@ async function confirmDelete() {
         ><TabsTrigger value="discovery">{{ t("service.discovery") }}</TabsTrigger></TabsList
       >
       <TabsContent value="manual"
-        ><form @submit.prevent="w.commitEditor()">
+        ><UiButton v-if="!editor.id" :disabled="!!busy" @click="chooseNasMain">{{
+          t("service.nasMain")
+        }}</UiButton>
+        <p v-if="!editor.id" class="field-hint">{{ t("service.nasMainHint") }}</p>
+        <form @submit.prevent="w.commitEditor()">
           <div class="field">
             <Label for="service-name">{{ t("service.name") }}</Label
             ><UiInput id="service-name" v-model="editor.name" required :disabled="!!busy" />

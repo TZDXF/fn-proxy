@@ -95,6 +95,8 @@
     "delete": "Delete {name}"
   },
   "service": {
+    "nasMain": "NAS main endpoint",
+    "nasMainHint": "Map the NAS main domain with paths and WebSocket support. 443 identifies the remote HTTPS endpoint, not an internal NAS port; the default local port is 18000.",
     "added": "Added services",
     "empty": "No service mappings yet",
     "name": "Service name",
@@ -189,7 +191,7 @@
     "serviceName": "Enter a service name",
     "port": "Ports must be integers between 1 and 65535",
     "https": "Enter a complete HTTPS service URL",
-    "upstream": "The service URL must be a root FN Connect subdomain URL for this NAS, without credentials or query parameters",
+    "upstream": "The service URL must be a root FN Connect main-domain or subdomain URL for this NAS, without credentials or query parameters",
     "noPort": "No local ports are available",
     "dockerMapping": "A confirmed TCP port and remote domain association is required to create a proxy mapping"
   },
@@ -398,7 +400,7 @@
     "route": {
       "fnIdInvalid": "An FN ID may only contain letters, digits and single hyphens.",
       "httpsRequired": "Enter a complete HTTPS service address.",
-      "upstreamInvalid": "The service address must be an FN Connect subdomain of this NAS, use HTTPS, and contain no credentials, query parameters or fragment.",
+      "upstreamInvalid": "The service address must be the FN Connect main domain or a subdomain of this NAS, use HTTPS, and contain no credentials, query parameters or fragment.",
       "subdomainInvalid": "The service subdomain format is invalid.",
       "rootAddressRequired": "Enter the root address of the service domain; API paths are appended when accessing the local proxy.",
       "tooManyServices": "At most 32 services can be configured.",

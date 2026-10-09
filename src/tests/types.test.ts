@@ -22,10 +22,14 @@ describe("profile and route validation", () => {
   });
   it("accepts this NAS's HTTPS service root", () => {
     expect(() => validateService(route(), "my-nas")).not.toThrow();
+    expect(() => validateService(route("https://my-nas.fnos.net/"), "my-nas")).not.toThrow();
   });
   it("rejects SSRF, foreign NAS, credentials and query secrets", () => {
     for (const url of [
       "https://127.0.0.1/",
+      "https://other-nas.fnos.net/",
+      "https://my-nas.fnos.net.evil.test/",
+      "https://my-nas.fnos.net/?token=secret",
       "https://hash.other-nas.fnos.net/",
       "https://hash.my-nas.fnos.net.evil.test/",
       "http://hash.my-nas.fnos.net/",
