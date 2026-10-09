@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
-import { createUpdates } from "../lib/updates";
+import { computed } from "vue";
+import type { createUpdates } from "../lib/updates";
 import UiButton from "./ui/UiButton.vue";
 import { useI18n } from "vue-i18n";
 import Icon from "./Icon.vue";
 import UiSelect from "./ui/UiSelect.vue";
 import UiSwitch from "./ui/UiSwitch.vue";
 
-defineProps<{
+const { updates } = defineProps<{
+  updates: ReturnType<typeof createUpdates>;
   autoStartProxy: boolean;
   startupDisabled: boolean;
   allowLanAccess: boolean;
@@ -21,9 +22,8 @@ const emit = defineEmits<{
 import { preferences, type AppLocale, type ThemeMode } from "../lib/preferences";
 
 const { t } = useI18n({ useScope: "global" });
-const updates = createUpdates();
-const { version, state, latest, errorKey, checking, opening, openFailed, versionFailed } = updates;
-onMounted(() => void updates.initialize());
+const { versionLabel, state, latest, errorKey, checking, opening, openFailed, versionFailed } =
+  updates;
 const { locale, theme } = preferences;
 const languages = [
   { value: "zh-CN", label: "简体中文" },
@@ -126,9 +126,7 @@ function selectTheme(event: Event) {
       <div class="settings-row">
         <div>
           <span>{{ t("updates.currentVersion") }}</span>
-          <strong class="update-version">{{
-            version ? "v" + version : t("common.reading")
-          }}</strong>
+          <strong class="update-version">{{ versionLabel || t("common.reading") }}</strong>
         </div>
         <div class="update-actions">
           <UiButton :disabled="opening" @click="updates.openRelease">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
 import Titlebar from "./components/Titlebar.vue";
 import { useI18n } from "vue-i18n";
@@ -20,9 +20,13 @@ import {
 } from "./lib/types";
 import { useWorkspace } from "./lib/workspace";
 import { localize } from "./lib/text";
+import { createUpdates } from "./lib/updates";
 
 const { t, locale } = useI18n({ useScope: "global" });
 const desktop = isTauri();
+const updates = createUpdates();
+const { versionLabel } = updates;
+onMounted(() => void updates.initialize());
 const w = useWorkspace();
 const {
   profile,
@@ -213,7 +217,7 @@ async function confirmDelete() {
         <span class="status-dot" :class="{ online: runningCount > 0 }" /><span>{{
           runningCount ? t("status.runningProxies", { count: runningCount }) : t("status.proxyOff")
         }}</span
-        ><span class="version">v0.1.0</span>
+        ><span class="version">{{ versionLabel || t("common.reading") }}</span>
       </div>
     </aside>
     <div class="main-shell">
@@ -583,6 +587,7 @@ async function confirmDelete() {
             :auto-start-proxy="w.autoStartProxy.value"
             :startup-disabled="!desktop || !settingsReady || Boolean(busy)"
             @update:auto-start-proxy="w.setAutoStartProxy"
+            :updates="updates"
             :allow-lan-access="allowLanAccess"
             :network-disabled="!desktop || !settingsReady || Boolean(busy) || anyProxyRunning"
             :any-proxy-running="anyProxyRunning"

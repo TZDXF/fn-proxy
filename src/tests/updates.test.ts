@@ -1,3 +1,4 @@
+import { version as packageVersion } from "../../package.json";
 import { describe, expect, it, vi } from "vitest";
 import { createUpdates, RELEASES_URL, type UpdateInfo } from "../lib/updates";
 
@@ -18,6 +19,16 @@ function fixture(desktop = true) {
 }
 
 describe("version and update checks", () => {
+  it("formats the shared version label from the installed version and update response", async () => {
+    const { updates, dependencies, result } = fixture();
+    expect(updates.versionLabel.value).toBe("");
+    dependencies.getVersion.mockResolvedValueOnce("1.2.3");
+    await updates.initialize();
+    expect(updates.versionLabel.value).toBe("v1.2.3");
+    dependencies.check.mockResolvedValueOnce({ ...result, currentVersion: "1.2.4" });
+    await updates.check();
+    expect(updates.versionLabel.value).toBe("v1.2.4");
+  });
   it("reads the installed desktop version", async () => {
     const { updates, dependencies } = fixture();
     await updates.initialize();
@@ -98,7 +109,8 @@ describe("version and update checks", () => {
     const { updates, dependencies } = fixture(false);
     await updates.initialize();
     await updates.check();
-    expect(updates.version.value).not.toBe("");
+    expect(updates.version.value).toBe(packageVersion);
+    expect(updates.versionLabel.value).toBe("v" + packageVersion);
     expect(dependencies.getVersion).not.toHaveBeenCalled();
     expect(dependencies.check).not.toHaveBeenCalled();
   });

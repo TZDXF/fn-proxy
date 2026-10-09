@@ -30,6 +30,7 @@ const defaultDependencies: UpdateDependencies = {
 
 export function createUpdates(dependencies: UpdateDependencies = defaultDependencies) {
   const version = ref(dependencies.desktop ? "" : previewVersion);
+  const versionLabel = computed(() => (version.value ? "v" + version.value : ""));
   const state = ref<UpdateState>("idle");
   const latest = ref<UpdateInfo | null>(null);
   const errorKey = ref("");
@@ -99,6 +100,7 @@ export function createUpdates(dependencies: UpdateDependencies = defaultDependen
   }
   return {
     version,
+    versionLabel,
     state,
     latest,
     errorKey,
