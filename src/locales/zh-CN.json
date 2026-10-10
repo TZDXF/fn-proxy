@@ -203,7 +203,9 @@
     "copied": "已复制到剪贴板",
     "copyFailed": "复制不可用，请手动选择并复制地址",
     "bootstrapFailed": "读取桌面后端状态失败，请查看应用启动日志",
-    "lanAccessSaved": "局域网访问设置已保存"
+    "lanAccessSaved": "局域网访问设置已保存",
+    "recoveryExhausted": "连接 {name} 自动恢复已达到 {max} 次重试上限，已断开连接并停止全部代理。请检查网络后手动重新连接。",
+    "recoveryFailed": "连接 {name} 自动恢复失败，已断开连接并停止全部代理。请查看日志后手动重新连接。"
   },
   "validation": {
     "username": "请输入 NAS 用户名",
@@ -363,7 +365,8 @@
       "unavailable": "无法自动恢复，请手动连接 NAS。",
       "inProgress": "NAS 会话正在恢复，请稍后重试。",
       "cooldown": "凭据刚完成恢复，请稍后重试。",
-      "failed": "会话恢复任务失败，请手动连接 NAS。"
+      "failed": "会话恢复任务失败，请手动连接 NAS。",
+      "exhausted": "自动恢复已达到 {max} 次重试上限，连接已断开；请检查网络后手动重新连接。"
     },
     "logs": {
       "appStarted": "应用已启动",
@@ -385,7 +388,7 @@
       "reconnectAttempt": "自动重新登录，第 {attempt}/{max} 次尝试。",
       "reconnectBackoff": "网络或入口解析暂时失败，{seconds} 秒后重试。",
       "reconnectManualRequired": "认证被拒绝、需要二次验证或协议异常；停止自动登录，请手动测试连接。",
-      "reconnectExhausted": "自动恢复已达到 {max} 次网络重试上限；停止本轮恢复，请手动测试连接。",
+      "reconnectExhausted": "自动恢复已达到 {max} 次网络重试上限；将主动断开连接并停止全部代理，请手动重新连接。",
       "requestSessionUnavailable": "请求缺少 NAS 会话，尝试自动恢复；方法={method}，本地端口={port}，状态={status}。",
       "requestEntryExpired": "收到 FN Connect 入口授权失效响应，尝试更新凭据；方法={method}，本地端口={port}，状态={status}。",
       "requestRetry": "凭据恢复后重试一次只读请求或 WebSocket 握手；方法={method}，本地端口={port}，原状态={status}。",
@@ -404,7 +407,9 @@
       "proxyStopped": "当前连接的本地代理监听已停止",
       "connectionRemoved": "连接已删除，本连接的代理和保存凭据已清理",
       "autoStartProxyFailed": "启动时自动开启代理失败，请检查服务配置或端口占用",
-      "autoConnectFailed": "启动时自动登录失败，请检查网络或重新输入凭据"
+      "autoConnectFailed": "启动时自动登录失败，请检查网络或重新输入凭据",
+      "recoveryDisconnected": "自动恢复失败，已主动断开连接、停止全部本地监听并清除内存会话；请手动重新连接。",
+      "systemNotificationFailed": "连接已断开，但系统通知发送失败；请查看应用内提示。"
     },
     "proxy": {
       "sessionUnavailable": "NAS 尚未登录或认证连接已失效",
@@ -437,5 +442,8 @@
       "resolveFailed": "FN ID 解析失败，请检查 FN ID 和 NAS 在线状态",
       "relayMissing": "未找到当前 NAS 的 FN Connect 中继地址；本应用不会自动跳转到内网 IP"
     }
+  },
+  "notifications": {
+    "connectionDisconnected": "FN Proxy · 连接已断开"
   }
 }

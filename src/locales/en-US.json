@@ -203,7 +203,9 @@
     "copied": "Copied to clipboard",
     "copyFailed": "Copy is unavailable. Please select and copy the URL manually.",
     "bootstrapFailed": "Could not load the desktop backend state. Check the startup logs.",
-    "lanAccessSaved": "LAN access setting saved"
+    "lanAccessSaved": "LAN access setting saved",
+    "recoveryExhausted": "Connection {name} reached the limit of {max} recovery attempts. It has been disconnected and all its proxies stopped. Check the network and reconnect manually.",
+    "recoveryFailed": "Automatic recovery failed for {name}. It has been disconnected and all its proxies stopped. Check the logs and reconnect manually."
   },
   "validation": {
     "username": "Enter your NAS username",
@@ -363,7 +365,8 @@
       "unavailable": "Automatic recovery is unavailable. Connect to the NAS manually.",
       "inProgress": "NAS session recovery is in progress. Retry later.",
       "cooldown": "Credentials were just recovered. Retry later.",
-      "failed": "Session recovery failed. Connect to the NAS manually."
+      "failed": "Session recovery failed. Connect to the NAS manually.",
+      "exhausted": "Automatic recovery reached the limit of {max} attempts. The connection is disconnected; check the network and reconnect manually."
     },
     "logs": {
       "appStarted": "Application started.",
@@ -385,7 +388,7 @@
       "reconnectAttempt": "Automatic sign-in attempt {attempt}/{max}.",
       "reconnectBackoff": "Temporary network or entry resolution failure. Retrying in {seconds} seconds.",
       "reconnectManualRequired": "Authentication was rejected, two-factor verification is required, or the protocol is invalid. Automatic sign-in stopped; test the connection manually.",
-      "reconnectExhausted": "Automatic recovery reached the limit of {max} network attempts. This recovery episode stopped; test the connection manually.",
+      "reconnectExhausted": "Automatic recovery reached the limit of {max} network attempts. The connection will be disconnected and all its proxies stopped; reconnect manually.",
       "requestSessionUnavailable": "Request has no NAS session; attempting recovery. Method={method}, local port={port}, status={status}.",
       "requestEntryExpired": "FN Connect entry authorization expired; attempting credential refresh. Method={method}, local port={port}, status={status}.",
       "requestRetry": "Retrying a read-only request or WebSocket handshake once after credential recovery. Method={method}, local port={port}, previous status={status}.",
@@ -404,7 +407,9 @@
       "proxyStopped": "Local proxy listeners for this connection stopped.",
       "connectionRemoved": "The connection was deleted; its proxies and saved credentials were cleaned up.",
       "autoStartProxyFailed": "Failed to start proxies automatically. Check service settings or port conflicts.",
-      "autoConnectFailed": "Automatic sign-in at startup failed. Check the network or re-enter credentials."
+      "autoConnectFailed": "Automatic sign-in at startup failed. Check the network or re-enter credentials.",
+      "recoveryDisconnected": "Automatic recovery failed. The connection was disconnected, all its local listeners stopped, and the in-memory session cleared. Reconnect manually.",
+      "systemNotificationFailed": "The connection is disconnected, but the system notification could not be delivered. Check the in-app notice."
     },
     "proxy": {
       "sessionUnavailable": "The NAS is not signed in or the authentication connection has expired.",
@@ -437,5 +442,8 @@
       "resolveFailed": "FN ID resolution failed. Check the FN ID and whether the NAS is online.",
       "relayMissing": "No FN Connect relay address was found for this NAS. This app never falls back to LAN IPs."
     }
+  },
+  "notifications": {
+    "connectionDisconnected": "FN Proxy · Connection disconnected"
   }
 }

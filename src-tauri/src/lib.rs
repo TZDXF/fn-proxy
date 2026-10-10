@@ -8,6 +8,7 @@ mod error;
 mod fn_connect;
 mod inventory;
 mod logging;
+mod notifications;
 mod proxy;
 mod recovery;
 mod resolver;
@@ -20,11 +21,14 @@ use std::sync::Arc;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
     let app = builder
         .setup(|app| {
+            app.manage(notifications::NotificationLocale::default());
             let path = app.path().app_config_dir()?.join("profile.json");
             let profile = storage::load_profiles(&path).unwrap_or_default();
             let state = Arc::new(commands::AppState::new(path, profile));

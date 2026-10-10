@@ -1,5 +1,5 @@
 use crate::text::Text;
-use crate::types::{validate_upstream, ServiceInventory, ServiceRoute};
+use crate::types::{is_main_host, validate_upstream, ServiceInventory, ServiceRoute};
 use std::collections::BTreeSet;
 
 pub struct DomainSync {
@@ -29,7 +29,7 @@ pub fn reconcile(routes: &[ServiceRoute], inventory: &ServiceInventory, fn_id: &
         // The NAS main endpoint is fixed, not a registry-provided port mapping.
         if validate_upstream(&route.upstream, fn_id)
             .ok()
-            .is_some_and(|url| url.host_str() == Some(format!("{fn_id}.fnos.net").as_str()))
+            .is_some_and(|url| url.host_str().is_some_and(|host| is_main_host(host, fn_id)))
         {
             continue;
         }
@@ -95,11 +95,13 @@ mod tests {
     fn main_endpoint_is_not_replaced_by_a_registered_service() {
         let report = inventory(json!([{"uri":{"port":443,"fnDomain":"app"}}]), json!([]));
         let mut main = route(443);
-        main.upstream = "https://my-nas.fnos.net/".into();
-        let result = reconcile(&[main.clone()], &report, "my-nas");
-        assert_eq!(result.routes[0].upstream, main.upstream);
-        assert_eq!(result.changed, 0);
-        assert!(result.warnings.is_empty());
+        for domain in ["fnos.net", "5ddd.com"] {
+            main.upstream = format!("https://my-nas.{domain}/");
+            let result = reconcile(&[main.clone()], &report, "my-nas");
+            assert_eq!(result.routes[0].upstream, main.upstream);
+            assert_eq!(result.changed, 0);
+            assert!(result.warnings.is_empty());
+        }
     }
     #[test]
     fn refreshes_by_nas_port_and_preserves_all_other_settings() {

@@ -201,11 +201,23 @@ pub fn normalize_fnid(input: &str) -> Result<String> {
     }
     Ok(id)
 }
+pub const FN_DOMAIN_SUFFIXES: [&str; 2] = ["fnos.net", "5ddd.com"];
+
+pub fn is_main_host(host: &str, fn_id: &str) -> bool {
+    FN_DOMAIN_SUFFIXES
+        .iter()
+        .any(|domain| host == format!("{fn_id}.{domain}"))
+}
+
 pub fn validate_upstream(input: &str, fn_id: &str) -> Result<url::Url> {
     let url = url::Url::parse(input.trim()).map_err(|_| error("route.httpsRequired"))?;
-    let root = format!("{fn_id}.fnos.net");
-    let suffix = format!(".{root}");
     let host = url.host_str().unwrap_or_default();
+    let root = FN_DOMAIN_SUFFIXES
+        .iter()
+        .map(|domain| format!("{fn_id}.{domain}"))
+        .find(|root| host == root || host.ends_with(&format!(".{root}")))
+        .ok_or_else(|| error("route.upstreamInvalid"))?;
+    let suffix = format!(".{root}");
     if url.scheme() != "https"
         || (host != root && !host.ends_with(&suffix))
         || url.username() != ""
@@ -259,9 +271,18 @@ mod tests {
     fn upstream_rejects_ssrf_and_suffix_confusion() {
         assert!(validate_upstream("https://hash-0.my-nas.fnos.net/", "my-nas").is_ok());
         assert!(validate_upstream("https://my-nas.fnos.net/", "my-nas").is_ok());
+        assert!(validate_upstream("https://my-nas.5ddd.com/", "my-nas").is_ok());
+        assert!(validate_upstream("https://hash-0.my-nas.5ddd.com/", "my-nas").is_ok());
         for s in [
             "https://my-nas.fnos.net.evil.test/",
             "https://other-nas.fnos.net/",
+            "https://hash.other-nas.5ddd.com/",
+            "https://my-nas.5ddd.com.evil.test/",
+            "https://evilmy-nas.5ddd.com/",
+            "https://my-nas.5ddd.com/?token=secret",
+            "http://my-nas.5ddd.com/",
+            "https://user@my-nas.5ddd.com/",
+            "https://my-nas.5ddd.com:8443/",
             "https://my-nas.fnos.net:8443/",
             "https://my-nas.fnos.net/?token=secret",
             "http://hash.my-nas.fnos.net/",

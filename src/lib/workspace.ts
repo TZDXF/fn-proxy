@@ -12,6 +12,7 @@ import {
   type Profile,
   type AppSnapshot,
   type ConnectionInfo,
+  type ConnectionFailure,
   type ProxyStatus,
   type DiscoveredService,
   type ServiceInventory,
@@ -229,6 +230,7 @@ export function useWorkspace() {
   }
   let timer: ReturnType<typeof setInterval> | undefined;
   let unlisten: UnlistenFn | undefined;
+  let unlistenFailure: UnlistenFn | undefined;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   function notify(message: string, error = false) {
     notice.value = { message, error };
@@ -525,6 +527,7 @@ export function useWorkspace() {
           show: t("tray.show"),
           quit: t("tray.quit"),
           tooltip: t("tray.tooltip"),
+          locale: i18n.global.locale.value,
         },
       });
     } catch {
@@ -563,6 +566,18 @@ export function useWorkspace() {
       unlisten = await listen<LogEntry>("fn-proxy:log", ({ payload }) => {
         logs.value = [...logs.value.slice(-199), payload];
       });
+      unlistenFailure = await listen<ConnectionFailure>(
+        "fn-proxy:connection-failed",
+        ({ payload }) => {
+          if (disposed || !connections.some((target) => target.profile.id === payload.connectionId))
+            return;
+          notify(localize(payload.message), true);
+          // Refresh authoritative state instead of applying an old event over a new manual login.
+          void refresh().catch(() => {
+            /* The polling loop will retry IPC. */
+          });
+        },
+      );
       await refresh();
       settingsReady.value = true;
       timer = setInterval(() => {
@@ -580,6 +595,7 @@ export function useWorkspace() {
     if (timer) clearInterval(timer);
     if (noticeTimer) clearTimeout(noticeTimer);
     unlisten?.();
+    unlistenFailure?.();
     for (const target of connections) {
       target.password = "";
       target.otp = "";

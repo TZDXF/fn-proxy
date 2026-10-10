@@ -303,7 +303,7 @@ async fn mock_server_with_auth(
 #[tokio::test]
 async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     let (base, server) = mock_server(true).await;
-    let session = NasSession::login(
+    let mut session = NasSession::login(
         base,
         "my-nas",
         "fixture-user",
@@ -315,6 +315,8 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     .unwrap();
     assert_eq!(session.info.auth_mode, "ticket-cookie");
     assert_eq!(&**session.entry_token.read().await, "fixture-entry-token");
+    // RPC uses the local fixture; discovery metadata models a validated production relay.
+    Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
     let inventory = session.inventory().await.unwrap();
     assert_eq!(inventory.total_entries, 6);
     assert_eq!(inventory.mapped_entries, 3);
@@ -330,6 +332,7 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     let services = session.domain_inventory().await.unwrap().services;
     assert_eq!(services[0].nas_port, 8084);
     assert_eq!(services[0].fn_domain, "fixture-0");
+    assert_eq!(services[0].upstream, "https://fixture-0.my-nas.5ddd.com/");
     session.refresh_entry_token().await.unwrap();
     session.rpc.lock().await.heartbeat().await.unwrap();
     session.rpc.lock().await.close().await;
@@ -338,7 +341,7 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
 #[tokio::test]
 async fn docker_permission_failure_retains_desktop_inventory_and_rpc_session() {
     let (base, server) = mock_server_with_docker(true, false).await;
-    let session = NasSession::login(
+    let mut session = NasSession::login(
         base,
         "my-nas",
         "fixture-user",
@@ -348,6 +351,8 @@ async fn docker_permission_failure_retains_desktop_inventory_and_rpc_session() {
     )
     .await
     .unwrap();
+    // RPC uses the local fixture; discovery metadata models a validated production relay.
+    Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
     let report = session.inventory().await.unwrap();
     assert_eq!(report.total_entries, 3);
     assert_eq!(report.services.len(), 1);
@@ -578,7 +583,7 @@ async fn container_stream_errors_and_timeouts_never_return_partial_metadata() {
 #[tokio::test]
 async fn service_inventory_does_not_request_container_list() {
     let (base, server) = mock_server_with_stream(true, true, MockStream::Forbidden).await;
-    let session = NasSession::login(
+    let mut session = NasSession::login(
         base,
         "my-nas",
         "fixture-user",
@@ -588,6 +593,8 @@ async fn service_inventory_does_not_request_container_list() {
     )
     .await
     .unwrap();
+    // RPC uses the local fixture; discovery metadata models a validated production relay.
+    Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
     let report = session.inventory().await.unwrap();
     assert_eq!(report.services.len(), 2);
     assert_eq!(report.total_entries, 6);

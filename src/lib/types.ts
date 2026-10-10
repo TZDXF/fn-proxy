@@ -37,6 +37,10 @@ export interface ConnectionInfo {
   fnConnect?: FnConnectInfo | null;
   message: BackendText;
 }
+export interface ConnectionFailure {
+  connectionId: string;
+  message: BackendText;
+}
 export interface ListenerInfo {
   name: string;
   localUrl: string;
@@ -156,8 +160,10 @@ export function validateService(route: ServiceRoute, fnId: string): void {
   }
   if (
     url.protocol !== "https:" ||
-    (url.hostname !== `${normalizeFnId(fnId)}.fnos.net` &&
-      !url.hostname.endsWith(`.${normalizeFnId(fnId)}.fnos.net`)) ||
+    !["fnos.net", "5ddd.com"].some((domain) => {
+      const root = `${normalizeFnId(fnId)}.${domain}`;
+      return url.hostname === root || url.hostname.endsWith(`.${root}`);
+    }) ||
     url.username ||
     url.password ||
     url.search ||

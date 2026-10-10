@@ -375,6 +375,61 @@ async fn establish(
     spawn_monitor(app.clone(), state.clone(), nas.clone()).await;
     Ok(nas.info.clone())
 }
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionFailure {
+    connection_id: String,
+    message: Text,
+}
+
+// Caller holds the connection operation lock. Keep the recovery failure latch until
+// explicit manual login; merely stopping listeners must never enable another retry round.
+async fn cleanup_failed_connection(state: &ConnectionState, message: Text) {
+    if let Some(cancel) = state.monitor.lock().await.take() {
+        cancel.cancel();
+    }
+    let previous = state.session.write().await.take();
+    *state.credentials.lock().await = None;
+    {
+        let mut info = state.info.write().unwrap();
+        info.connected = false;
+        info.relay.clear();
+        info.auth_mode.clear();
+        info.fn_connect = None;
+        info.message = message;
+    }
+    stop_internal(state).await;
+    if let Some(previous) = previous {
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            previous.rpc.lock().await.close().await;
+        })
+        .await;
+    }
+}
+async fn finish_failed_recovery(app: &AppHandle, state: &ConnectionState, failure: &AppError) {
+    let name = state.profile().fn_id;
+    let message = match failure {
+        AppError::RecoveryExhausted { attempts, .. } => Text::with(
+            "notice.recoveryExhausted",
+            [("name", name), ("max", attempts.to_string())],
+        ),
+        _ => Text::with("notice.recoveryFailed", [("name", name)]),
+    };
+    cleanup_failed_connection(state, failure.text()).await;
+    state.log(app, "error", Text::new("logs.recoveryDisconnected"));
+    let _ = app.emit(
+        "fn-proxy:connection-failed",
+        ConnectionFailure {
+            connection_id: state.id.clone(),
+            message: message.clone(),
+        },
+    );
+    // Native delivery also works when the main window is hidden in the tray.
+    // Failure to deliver a toast must not undo disconnection or restart recovery.
+    if crate::notifications::show_connection_failure(app, &message).is_err() {
+        state.log(app, "warn", Text::new("logs.systemNotificationFailed"));
+    }
+}
 /// Never hold the connection operation lock across network calls/backoff: manual disconnect
 /// must be able to cancel recovery immediately, and cancelled workers must not install a session.
 async fn recover_connection(
@@ -409,10 +464,8 @@ async fn recover_connection(
                         if cancel.is_cancelled() {
                             return Err(error("recovery.cancelled"));
                         }
-                        *state.session.write().await = None;
-                        state.info.write().unwrap().connected = false;
-                        state.info.write().unwrap().message = e.text();
                         state.log(app, "error", Text::new("logs.reconnectManualRequired"));
+                        finish_failed_recovery(app, state, &e).await;
                         return Err(e);
                     }
                 }
@@ -430,12 +483,15 @@ async fn recover_connection(
         *state.session.write().await = None;
         state.info.write().unwrap().connected = false;
         state.info.write().unwrap().message = Text::new("logs.reconnecting");
-        state
-            .credentials
-            .lock()
-            .await
-            .clone()
-            .ok_or_else(|| error("recovery.unavailable"))?
+        let credentials = state.credentials.lock().await.clone();
+        match credentials {
+            Some(credentials) => credentials,
+            None => {
+                let failure = error("recovery.unavailable");
+                finish_failed_recovery(app, state, &failure).await;
+                return Err(failure);
+            }
+        }
     };
     let result = recovery::retry(
         cancel,
@@ -471,7 +527,7 @@ async fn recover_connection(
             Ok(())
         }
         Err(e) => {
-            state.info.write().unwrap().message = e.text();
+            finish_failed_recovery(app, state, &e).await;
             Err(e)
         }
     }
@@ -1640,6 +1696,128 @@ mod tests {
                 .status,
             "available"
         );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn exhausted_recovery_disconnects_once_releases_ports_and_preserves_other_connections() {
+        use std::sync::atomic::AtomicUsize;
+        let manager = manager();
+        let first = manager.connection("first").unwrap();
+        let second = manager.connection("second").unwrap();
+        let (base, server) = crate::auth::integration_tests::mock_server(true).await;
+        let session = NasSession::login(
+            base,
+            "nas-a",
+            "fixture-user",
+            "fixture-password",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        *first.info.write().unwrap() = session.info.clone();
+        first.info.write().unwrap().fn_connect = Some(session.fn_connect.read().await);
+        *first.session.write().await = Some(session);
+        *first.credentials.lock().await = Some(Credentials {
+            fn_id: "nas-a".into(),
+            username: "fixture-user".into(),
+            password: Zeroizing::new("fixture-password".into()),
+            remember: true,
+        });
+        let monitor = CancellationToken::new();
+        *first.monitor.lock().await = Some(monitor.clone());
+        let mut ports = vec![];
+        for state in [&first, &second] {
+            let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = reserved.local_addr().unwrap().port();
+            drop(reserved);
+            ports.push(port);
+            let fn_id = state.profile().fn_id;
+            *state.proxies.lock().await = proxy::start(
+                &[ServiceRoute {
+                    id: "fixture-service".into(),
+                    name: "Fixture".into(),
+                    nas_port: 8084,
+                    local_port: port,
+                    upstream: format!("https://api.{fn_id}.fnos.net/"),
+                    enabled: true,
+                }],
+                &fn_id,
+                state.proxy_session(),
+                state.counter.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let observed_cleanups = cleanups.clone();
+        let weak = Arc::downgrade(&first);
+        first.recovery.configure(
+            Arc::new(move |_| {
+                let state = weak.upgrade().unwrap();
+                let cleanups = observed_cleanups.clone();
+                Box::pin(async move {
+                    let _guard = state.operation.lock().await;
+                    let error = AppError::RecoveryExhausted {
+                        attempts: recovery::MAX_ATTEMPTS,
+                        source: Box::new(
+                            AppError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
+                                .at("entry_handshake"),
+                        ),
+                    };
+                    cleanups.fetch_add(1, Ordering::SeqCst);
+                    cleanup_failed_connection(&state, error.text()).await;
+                    Err(error)
+                })
+            }),
+            Arc::new(|_, _| {}),
+        );
+        let generation = first.recovery.generation();
+        let caller_cancel = CancellationToken::new();
+        let results = futures_util::future::join_all((0..20).map(|_| {
+            first
+                .recovery
+                .recover(RecoveryReason::HeartbeatFailed, generation, &caller_cancel)
+        }))
+        .await;
+        assert!(results
+            .into_iter()
+            .all(|result| result.unwrap_err().text().code == "recovery.exhausted"));
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+        assert!(monitor.is_cancelled());
+        assert!(first.monitor.lock().await.is_none());
+        assert!(first.session.read().await.is_none());
+        assert!(first.credentials.lock().await.is_none());
+        assert!(first.proxies.lock().await.is_empty());
+        let info = first.info.read().unwrap().clone();
+        assert!(!info.connected);
+        assert!(info.relay.is_empty());
+        assert!(info.auth_mode.is_empty());
+        assert!(info.fn_connect.is_none());
+        assert_eq!(info.message.code, "recovery.exhausted");
+        assert!(
+            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, ports[0]))
+                .await
+                .is_ok()
+        );
+        assert_eq!(second.proxies.lock().await.len(), 1);
+        assert!(
+            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, ports[1]))
+                .await
+                .is_err()
+        );
+        assert!(first
+            .recovery
+            .recover(
+                RecoveryReason::SessionUnavailable,
+                first.recovery.generation(),
+                &caller_cancel
+            )
+            .await
+            .is_err());
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+        stop_internal(&second).await;
         server.abort();
     }
 }

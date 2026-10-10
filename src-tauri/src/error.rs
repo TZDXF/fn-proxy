@@ -10,6 +10,12 @@ pub enum AppError {
         stage: &'static str,
         source: Box<AppError>,
     },
+    #[error("automatic recovery exhausted after {attempts} attempts")]
+    RecoveryExhausted {
+        attempts: usize,
+        #[source]
+        source: Box<AppError>,
+    },
     #[error("http: {0}")]
     Http(#[from] reqwest::Error),
     #[error("websocket: {0}")]
@@ -31,12 +37,13 @@ impl AppError {
     pub fn stage(&self) -> &'static str {
         match self {
             Self::Stage { stage, .. } => stage,
+            Self::RecoveryExhausted { source, .. } => source.stage(),
             _ => "unknown",
         }
     }
     fn cause(&self) -> &Self {
         match self {
-            Self::Stage { source, .. } => source.cause(),
+            Self::Stage { source, .. } | Self::RecoveryExhausted { source, .. } => source.cause(),
             _ => self,
         }
     }
@@ -72,6 +79,11 @@ impl AppError {
         }
     }
     pub fn retryable(&self) -> bool {
+        match self {
+            Self::RecoveryExhausted { .. } => return false,
+            Self::Stage { source, .. } => return source.retryable(),
+            _ => {}
+        }
         use tokio_tungstenite::tungstenite::Error as WsError;
         match self.cause() {
             Self::Timeout(_) => true,
@@ -163,6 +175,9 @@ impl AppError {
     pub fn text(&self) -> Text {
         match self {
             AppError::Stage { source, .. } => source.text(),
+            AppError::RecoveryExhausted { attempts, .. } => {
+                Text::with("recovery.exhausted", [("max", attempts.to_string())])
+            }
             AppError::Code(text) => text.clone(),
             AppError::Http(_) => Text::new("error.http"),
             AppError::WebSocket(_) => Text::new("error.webSocket"),

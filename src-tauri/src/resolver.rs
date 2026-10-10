@@ -1,5 +1,5 @@
 use crate::error::{error, Result};
-use crate::types::normalize_fnid;
+use crate::types::{is_main_host, normalize_fnid, validate_upstream};
 use md5::Md5;
 use reqwest::{cookie::Jar, Client};
 use serde_json::{json, Value};
@@ -111,25 +111,43 @@ pub async fn resolve(id: &str) -> Result<url::Url> {
     if response["code"].as_i64() != Some(0) {
         return Err(error("resolver.resolveFailed"));
     }
-    let expected = format!("{id}.fnos.net");
-    let relay = response["data"]["fn"]
+    let relay = select_relay(&response, &id)?;
+    Ok(relay)
+}
+fn select_relay(response: &Value, id: &str) -> Result<url::Url> {
+    response["data"]["fn"]
         .as_array()
         .and_then(|list| {
             list.iter().filter_map(Value::as_str).find_map(|host| {
-                let url = url::Url::parse(&format!("https://{host}/")).ok()?;
-                (url.host_str() == Some(expected.as_str())
-                    && url.port().is_none_or(|p| p == 443)
-                    && url.username().is_empty()
-                    && url.password().is_none())
-                .then_some(url)
+                let url = validate_upstream(&format!("https://{host}/"), id).ok()?;
+                is_main_host(url.host_str()?, id).then_some(url)
             })
         })
-        .ok_or_else(|| error("resolver.relayMissing"))?;
-    Ok(relay)
+        .ok_or_else(|| error("resolver.relayMissing"))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selects_supported_main_relays_only() {
+        for domain in ["fnos.net", "5ddd.com"] {
+            let host = format!("my-nas.{domain}");
+            let response = json!({"data":{"fn":["other-nas.5ddd.com", host]}});
+            assert_eq!(
+                select_relay(&response, "my-nas").unwrap().host_str(),
+                Some(host.as_str())
+            );
+        }
+        for host in [
+            "my-nas.5ddd.com.evil.test",
+            "app.my-nas.5ddd.com",
+            "my-nas.5ddd.com/?token=x",
+            "user@my-nas.5ddd.com",
+            "my-nas.5ddd.com:8443",
+        ] {
+            assert!(select_relay(&json!({"data":{"fn":[host]}}), "my-nas").is_err());
+        }
+    }
     #[test]
     fn signatures_are_deterministic_and_timestamped() {
         let a = resolver_headers("my-nas", 123, "100000", "prefix", "public-key");

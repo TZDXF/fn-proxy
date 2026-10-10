@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   mounted: [] as (() => Promise<void>)[],
   unmounted: [] as (() => void)[],
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
+  unlisteners: [] as ReturnType<typeof vi.fn>[],
 }));
 vi.mock("vue", async (original) => ({
   ...(await original<typeof import("vue")>()),
@@ -15,7 +17,14 @@ vi.mock("vue", async (original) => ({
   onUnmounted: (callback: () => void) => mocks.unmounted.push(callback),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => mocks.desktop, invoke: mocks.invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    mocks.listeners.set(name, handler);
+    const unlisten = vi.fn(() => mocks.listeners.delete(name));
+    mocks.unlisteners.push(unlisten);
+    return unlisten;
+  }),
+}));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 const profile = (id: string, fnId = id): Profile => ({
   id,
@@ -46,6 +55,8 @@ beforeEach(() => {
   mocks.invoke.mockReset();
   mocks.mounted.length = 0;
   mocks.unmounted.length = 0;
+  mocks.listeners.clear();
+  mocks.unlisteners.length = 0;
 });
 afterEach(() => {
   mocks.unmounted.forEach((callback) => callback());
@@ -1129,4 +1140,78 @@ describe("launch at login settings", () => {
       expect(w.busy.value).toBe("");
     },
   );
+});
+
+describe("automatic recovery failure notices", () => {
+  it("shows a localized error and refreshes the disconnected proxy without changing other connections", async () => {
+    mocks.desktop = true;
+    let failed = false;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_bootstrap")
+        return {
+          profiles: [
+            { profile: profile("first"), hasSavedPassword: true },
+            { profile: profile("second"), hasSavedPassword: true },
+          ],
+        };
+      if (command === "get_logs") return [];
+      if (command === "get_snapshot")
+        return {
+          connections: [
+            {
+              id: "first",
+              connection: { ...info("first"), connected: !failed },
+              services: [],
+              proxy: { running: !failed, listeners: [], requests: 5 },
+            },
+            {
+              id: "second",
+              connection: info("second"),
+              services: [],
+              proxy: { running: true, listeners: [], requests: 8 },
+            },
+          ],
+        };
+    });
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    expect(w.connections[0]!.connection.connected).toBe(true);
+    failed = true;
+    mocks.listeners.get("fn-proxy:connection-failed")!({
+      payload: {
+        connectionId: "first",
+        message: { code: "notice.recoveryExhausted", params: { name: "first", max: "3" } },
+      },
+    });
+    await vi.waitFor(() => expect(w.connections[0]!.proxy.running).toBe(false));
+    expect(w.connections[0]!.connection.connected).toBe(false);
+    expect(w.connections[1]!.connection.connected).toBe(true);
+    expect(w.connections[1]!.proxy.running).toBe(true);
+    expect(w.notice.value?.error).toBe(true);
+    expect(w.notice.value?.message).toContain("first");
+    expect(w.notice.value?.message).toContain("3");
+    expect(w.hasSavedPassword.value).toBe(true);
+  });
+  it("ignores removed connections and events after disposal, and unregisters both listeners", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_bootstrap")
+        return { profiles: [{ profile: profile("first"), hasSavedPassword: true }] };
+      if (command === "get_logs") return [];
+      if (command === "get_snapshot") return { connections: [] };
+    });
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    const event = mocks.listeners.get("fn-proxy:connection-failed")!;
+    const payload = {
+      connectionId: "deleted",
+      message: { code: "notice.recoveryFailed", params: { name: "deleted" } },
+    };
+    event({ payload });
+    expect(w.notice.value).toBeNull();
+    mocks.unmounted.forEach((callback) => callback());
+    for (const unlisten of mocks.unlisteners) expect(unlisten).toHaveBeenCalledTimes(1);
+    event({ payload: { ...payload, connectionId: "first" } });
+    expect(w.notice.value).toBeNull();
+  });
 });

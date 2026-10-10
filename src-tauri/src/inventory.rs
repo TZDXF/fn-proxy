@@ -17,6 +17,40 @@ pub fn parse_inventory(value: &Value, fn_id: &str) -> Result<ServiceInventory> {
 pub fn parse_docker_inventory(value: &Value, fn_id: &str) -> Result<ServiceInventory> {
     parse_source(value, fn_id, "docker")
 }
+/// Use the authenticated relay's domain for all registered service addresses.
+pub fn parse_relay_inventory(
+    value: &Value,
+    fn_id: &str,
+    relay: &str,
+    docker: bool,
+) -> Result<ServiceInventory> {
+    let fn_id = normalize_fnid(fn_id)?;
+    let relay = validate_upstream(relay, &fn_id)?;
+    let host = relay.host_str().unwrap_or_default();
+    if !crate::types::is_main_host(host, &fn_id) {
+        return Err(error("route.upstreamInvalid"));
+    }
+    let mut inventory = if docker {
+        parse_docker_inventory(value, &fn_id)?
+    } else {
+        parse_inventory(value, &fn_id)?
+    };
+    let old_suffix = format!(".{fn_id}.fnos.net");
+    let new_suffix = format!(".{host}");
+    let rewrite = |upstream: &mut String| {
+        // parse_source has already validated the host and excluded credentials and paths.
+        *upstream = upstream.replace(&old_suffix, &new_suffix);
+    };
+    for service in &mut inventory.services {
+        rewrite(&mut service.upstream);
+    }
+    for entry in &mut inventory.entries {
+        if let Some(upstream) = &mut entry.upstream {
+            rewrite(upstream);
+        }
+    }
+    Ok(inventory)
+}
 fn source_name(source_id: &str) -> &'static str {
     if source_id == "docker" {
         "inventory.sourceDocker"
@@ -207,6 +241,36 @@ pub fn unavailable_registries() -> ServiceInventory {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn service_addresses_follow_authenticated_relay() {
+        let value =
+            serde_json::json!({"data":{"list":[{"uri":{"port":8084,"fnDomain":"hash-0"}}]}});
+        for docker in [false, true] {
+            for domain in ["fnos.net", "5ddd.com"] {
+                let report = super::parse_relay_inventory(
+                    &value,
+                    "my-nas",
+                    &format!("https://my-nas.{domain}"),
+                    docker,
+                )
+                .unwrap();
+                let expected = format!("https://hash-0.my-nas.{domain}/");
+                assert_eq!(report.services[0].upstream, expected);
+                assert_eq!(
+                    report.entries[0].upstream.as_deref(),
+                    Some(expected.as_str())
+                );
+            }
+        }
+        assert!(super::parse_relay_inventory(
+            &value,
+            "my-nas",
+            "https://other-nas.5ddd.com",
+            false
+        )
+        .is_err());
+    }
+
     use super::*;
     use serde_json::json;
     #[test]

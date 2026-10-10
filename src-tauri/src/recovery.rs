@@ -267,7 +267,10 @@ where
                             [("max", MAX_ATTEMPTS.to_string())],
                         ),
                     );
-                    return Err(e);
+                    return Err(AppError::RecoveryExhausted {
+                        attempts: MAX_ATTEMPTS,
+                        source: Box::new(e),
+                    });
                 }
                 let delay = backoff[attempt - 1];
                 diagnostic(
@@ -380,6 +383,11 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), MAX_ATTEMPTS);
+        let failure = result.unwrap_err();
+        assert_eq!(failure.text().code, "recovery.exhausted");
+        assert_eq!(failure.text().params["max"], "3");
+        assert!(!failure.retryable());
+        assert_eq!(failure.stage(), "resolve");
         assert!(events
             .lock()
             .unwrap()

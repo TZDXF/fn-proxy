@@ -18,6 +18,8 @@ pub struct TrayLabels {
     show: String,
     quit: String,
     tooltip: String,
+    #[serde(default)]
+    locale: String,
 }
 
 pub struct TrayHandles {
@@ -46,7 +48,8 @@ pub fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<bool, Text> 
 }
 
 #[tauri::command]
-pub fn set_tray_labels(handles: State<'_, TrayHandles>, labels: TrayLabels) {
+pub fn set_tray_labels(app: AppHandle, handles: State<'_, TrayHandles>, labels: TrayLabels) {
+    crate::notifications::set_locale(&app, &labels.locale);
     // A rejected label update must never break the app; the tray just keeps
     // its previous language until the next successful sync.
     let _ = handles.show.set_text(labels.show);

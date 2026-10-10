@@ -441,11 +441,25 @@ impl NasSession {
                 false,
             )
             .await
-            .and_then(|value| crate::inventory::parse_inventory(&value, &self.info.fn_id));
+            .and_then(|value| {
+                crate::inventory::parse_relay_inventory(
+                    &value,
+                    &self.info.fn_id,
+                    &self.info.relay,
+                    false,
+                )
+            });
         let docker = rpc
             .call("appcgi.sac.entry.v1.dockerList", json!({}), false)
             .await
-            .and_then(|value| crate::inventory::parse_docker_inventory(&value, &self.info.fn_id));
+            .and_then(|value| {
+                crate::inventory::parse_relay_inventory(
+                    &value,
+                    &self.info.fn_id,
+                    &self.info.relay,
+                    true,
+                )
+            });
         crate::inventory::merge_inventories(desktop, docker)
     }
     pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {

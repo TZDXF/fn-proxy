@@ -916,6 +916,9 @@ pub async fn stop(handles: Vec<ProxyHandle>) {
             .is_err()
         {
             handle.task.abort();
+            // Await cancellation so the listener really releases its port before
+            // disconnection is published or a subsequent manual restart binds it.
+            let _ = handle.task.await;
         }
     }
 }
