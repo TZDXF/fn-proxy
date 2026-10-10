@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { discoverySources, type DiscoveredService, type InventoryEntry } from "../lib/types";
 
@@ -42,5 +43,31 @@ describe("registered service discovery", () => {
         entry("inventory.sourceDocker", { nasPort: 9999 }),
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("NAS main entry placement", () => {
+  const app = readFileSync(new URL("../App.vue", import.meta.url), "utf8");
+  const manual = app.split('<TabsContent value="manual"')[1]!.split("</TabsContent")[0]!;
+  const discovery = app.split('<TabsContent value="discovery"')[1]!.split("</TabsContent")[0]!;
+
+  it("offers the NAS main entry in the discovery list instead of the manual form", () => {
+    expect(manual).not.toContain("chooseNasMain");
+    expect(manual).not.toContain("service.nasMainHint");
+    expect(discovery).toContain('@click="chooseNasMain"');
+    expect(discovery).not.toContain("service.nasMainHint");
+    expect(discovery.indexOf('class="discovered-list"')).toBeLessThan(
+      discovery.indexOf('@click="chooseNasMain"'),
+    );
+  });
+
+  it("keeps the main entry available without inventory and prevents duplicate port mappings", () => {
+    expect(discovery.indexOf('@click="chooseNasMain"')).toBeLessThan(
+      discovery.indexOf('<template v-if="inventory">'),
+    );
+    expect(discovery).toContain(
+      "!!busy || connecting || profile.services.some((s) => s.nasPort === 443)",
+    );
+    expect(discovery).not.toContain('t("service.noAvailable")');
   });
 });

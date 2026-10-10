@@ -715,11 +715,7 @@ async function confirmDelete() {
         ><TabsTrigger value="discovery">{{ t("service.discovery") }}</TabsTrigger></TabsList
       >
       <TabsContent value="manual"
-        ><UiButton v-if="!editor.id" :disabled="!!busy" @click="chooseNasMain">{{
-          t("service.nasMain")
-        }}</UiButton>
-        <p v-if="!editor.id" class="field-hint">{{ t("service.nasMainHint") }}</p>
-        <form @submit.prevent="w.commitEditor()">
+        ><form @submit.prevent="w.commitEditor()">
           <div class="field">
             <Label for="service-name">{{ t("service.name") }}</Label
             ><UiInput id="service-name" v-model="editor.name" required :disabled="!!busy" />
@@ -796,7 +792,27 @@ async function confirmDelete() {
               <strong>{{ localize(source.name) }}：</strong>{{ localize(source.message) }}
             </p>
           </template>
-          <div class="discovered-list">
+        </template>
+        <div class="discovered-list">
+          <div class="discovered-row">
+            <div>
+              <strong>{{ t("service.nasMain") }}</strong>
+              <span class="badge">{{ t("service.sourceNas") }}</span>
+              <span class="cell-sub"
+                >:443 · https://{{ profile.fnId.trim().toLowerCase() }}.fnos.net/</span
+              >
+            </div>
+            <UiButton
+              :disabled="!!busy || connecting || profile.services.some((s) => s.nasPort === 443)"
+              @click="chooseNasMain"
+              >{{
+                profile.services.some((s) => s.nasPort === 443)
+                  ? t("common.added")
+                  : t("common.select")
+              }}</UiButton
+            >
+          </div>
+          <template v-if="inventory">
             <div v-for="service in discovered" :key="service.id" class="discovered-row">
               <div>
                 <strong>{{ service.name }}</strong>
@@ -825,11 +841,8 @@ async function confirmDelete() {
                 }}</UiButton
               >
             </div>
-            <div v-if="!discovered.length" class="empty-state compact">
-              <h3>{{ t("service.noAvailable") }}</h3>
-            </div>
-          </div>
-        </template></TabsContent
+          </template>
+        </div></TabsContent
       >
     </TabsRoot>
   </UiDialog>
