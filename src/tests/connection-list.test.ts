@@ -55,7 +55,7 @@ afterEach(() => {
 });
 async function renderList() {
   const html = await renderToString(createSSRApp(App).use(i18n));
-  const table = html.match(/<table>([\s\S]*?)<\/table>/)?.[1];
+  const table = html.match(/<table\b[^>]*>([\s\S]*?)<\/table>/)?.[1];
   expect(table).toBeDefined();
   return table!;
 }
@@ -115,4 +115,14 @@ describe("rendered connection list proxy controls", () => {
     expect(table).toContain("开启中…");
     expect(table).not.toContain('aria-label="连接 my-nas"');
   });
+});
+
+it("keeps FN Connect metadata in the existing connection row", async () => {
+  const table = await renderList();
+  const body = table.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+  expect(body).toBeDefined();
+  expect(body!.match(/<tr\b/g)).toHaveLength(1);
+  expect(body!.match(/<td\b/g)).toHaveLength(6);
+  expect(body).toContain('class="fn-connect-inline"');
+  expect(body).not.toContain("fn-connect-card");
 });

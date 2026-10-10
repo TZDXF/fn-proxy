@@ -476,9 +476,46 @@ async fn recover_connection(
         }
     }
 }
+// The account API is optional metadata: errors must never trigger session recovery.
+async fn refresh_fn_connect(state: &ConnectionState, current: &Arc<NasSession>) {
+    let info = current.fn_connect.read().await;
+    // Keep the session guard through publication so disconnect/recovery cannot install stale data.
+    let session = state.session.read().await;
+    if session
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, current))
+    {
+        state.info.write().unwrap().fn_connect = Some(info);
+    }
+}
 async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc<NasSession>) {
     let cancel = CancellationToken::new();
     *state.monitor.lock().await = Some(cancel.clone());
+    // Read metadata independently of heartbeats and domain discovery. A slow optional
+    // account API cannot delay the core proxy maintenance/recovery path.
+    let metadata_state = Arc::downgrade(&state);
+    let metadata_cancel = cancel.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut refreshed = tokio::time::Instant::now();
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! { _=metadata_cancel.cancelled()=>return, _=tick.tick()=>{} }
+            let Some(state) = metadata_state.upgrade() else {
+                return;
+            };
+            if refreshed.elapsed() < Duration::from_secs(60)
+                && state.info.read().unwrap().fn_connect.is_some()
+            {
+                continue;
+            }
+            let current = state.session.read().await.clone();
+            if let Some(current) = current {
+                tokio::select! { _=metadata_cancel.cancelled()=>return, _=refresh_fn_connect(&state, &current)=>{} }
+                refreshed = tokio::time::Instant::now();
+            }
+        }
+    });
     let weak = Arc::downgrade(&state);
     let handler_app = app.clone();
     let handler_cancel = cancel.clone();
@@ -1560,5 +1597,49 @@ mod tests {
         assert!(set_lan_access(&manager, true).await.is_err());
         assert!(!manager.allow_lan_access.load(Ordering::Relaxed));
         std::fs::remove_file(blocker).unwrap();
+    }
+    #[tokio::test]
+    async fn fn_connect_refresh_never_publishes_to_a_disconnected_or_replaced_session() {
+        let (base, server) = crate::auth::integration_tests::mock_server(true).await;
+        let current = NasSession::login(
+            base.clone(),
+            "my-nas",
+            "fixture-user",
+            "fixture-password",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let next = NasSession::login(
+            base,
+            "my-nas",
+            "fixture-user",
+            "fixture-password",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let state =
+            ConnectionState::new(Profile::default(), false, Arc::new(RuntimeLogs::default()));
+        refresh_fn_connect(&state, &current).await;
+        assert!(state.info.read().unwrap().fn_connect.is_none());
+        *state.session.write().await = Some(next.clone());
+        refresh_fn_connect(&state, &current).await;
+        assert!(state.info.read().unwrap().fn_connect.is_none());
+        refresh_fn_connect(&state, &next).await;
+        assert_eq!(
+            state
+                .info
+                .read()
+                .unwrap()
+                .fn_connect
+                .as_ref()
+                .unwrap()
+                .status,
+            "available"
+        );
+        server.abort();
     }
 }

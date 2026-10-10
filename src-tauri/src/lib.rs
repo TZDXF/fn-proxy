@@ -5,6 +5,7 @@ mod desktop;
 #[cfg(test)]
 mod docker;
 mod error;
+mod fn_connect;
 mod inventory;
 mod logging;
 mod proxy;

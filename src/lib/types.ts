@@ -17,12 +17,24 @@ export interface Profile {
   autoConnect: boolean;
   services: ServiceRoute[];
 }
+export interface FnConnectEntitlement {
+  tier: "base" | "premium" | "pro" | "unknown";
+  bandwidthMbps: number | null;
+  trafficUsedMb: number | null;
+  trafficPerMonthMb: number | null;
+  endTime: number | null;
+}
+export interface FnConnectInfo {
+  status: "available" | "unbound" | "unavailable";
+  entitlement: FnConnectEntitlement | null;
+}
 export interface ConnectionInfo {
   connected: boolean;
   fnId: string;
   username: string;
   relay: string;
   authMode: string;
+  fnConnect?: FnConnectInfo | null;
   message: BackendText;
 }
 export interface ListenerInfo {

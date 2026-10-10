@@ -29,6 +29,10 @@ const paths: Record<string, string> = {
   power: "M12 2v10 M6 5a9 9 0 1 0 12 0",
   info: "M12 8h.01 M12 11v6 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
   globe: "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M2 12h20 M12 2c5 6 5 14 0 20-5-6-5-14 0-20",
+  diamond: "M3 8l4-5h10l4 5-9 13z M3 8h18 M7 3l5 18 5-18",
+  speed: "M4 18a9 9 0 1 1 16 0 M12 14l5-6 M5 10l2 1 M12 4v3 M18 10l2-1 M10 18h4",
+  transfer: "M8 3v17 m-4-4 4 4 4-4 M16 21V4 m-4 4 4-4 4 4",
+  calendar: "M4 5h16v16H4z M4 10h16 M8 3v4 M16 3v4 M8 14h2 M14 14h2",
   folder: "M3 7V4h7l2 3h9v14H3z",
 };
 </script>

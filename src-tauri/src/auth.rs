@@ -282,6 +282,7 @@ pub struct NasSession {
     pub entry_token: RwLock<Zeroizing<String>>,
     pub info: ConnectionInfo,
     pub created_at: tokio::time::Instant,
+    pub fn_connect: crate::fn_connect::FnConnectClient,
 }
 impl NasSession {
     pub async fn login(
@@ -380,6 +381,15 @@ impl NasSession {
             .unwrap()
             .decrypt_secret(secret)
             .map_err(|e| e.at("login_secret"))?;
+        let fn_connect = crate::fn_connect::FnConnectClient::new(
+            jar.clone(),
+            &base,
+            if auth_mode == "legacy" {
+                logged["token"].as_str().filter(|token| !token.is_empty())
+            } else {
+                None
+            },
+        );
         for field in ["token", "longToken", "secret", "ticket", "accessToken"] {
             if let Some(Value::String(value)) = logged.get_mut(field) {
                 value.zeroize();
@@ -410,10 +420,12 @@ impl NasSession {
             username: username.to_owned(),
             relay: base.origin().ascii_serialization(),
             auth_mode: auth_mode.to_owned(),
+            fn_connect: None,
             message: Text::new("auth.loggedIn"),
         };
         Ok(Arc::new(Self {
             rpc: Mutex::new(rpc),
+            fn_connect,
             entry_token: RwLock::new(Zeroizing::new(entry_token)),
             info,
             created_at: tokio::time::Instant::now(),

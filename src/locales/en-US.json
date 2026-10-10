@@ -78,6 +78,26 @@
     "select": "Select a connection",
     "notConnected": "Not connected to NAS yet"
   },
+  "fnConnect": {
+    "title": "FN Connect",
+    "tiers": {
+      "base": "Base",
+      "premium": "Premium",
+      "pro": "Pro",
+      "unknown": "Unknown tier"
+    },
+    "bandwidth": "Bandwidth",
+    "bandwidthHint": "Plan bandwidth, not a real-time speed test",
+    "traffic": "Monthly high-speed traffic",
+    "trafficHint": "Usage and allowance reported by FN, not local proxy request counts",
+    "validity": "Validity",
+    "expiresAt": "Until {date}",
+    "unlimited": "Unlimited traffic",
+    "loading": "Reading plan information…",
+    "disconnected": "Connect to view plan and traffic",
+    "unbound": "No linked FN account; plan information unavailable",
+    "unavailable": "Plan information temporarily unavailable"
+  },
   "actions": {
     "operations": "Actions",
     "startProxy": "Start proxy",

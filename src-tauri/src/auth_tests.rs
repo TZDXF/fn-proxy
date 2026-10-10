@@ -77,6 +77,23 @@ async fn ticket(Json(body): Json<Value>) -> impl IntoResponse {
         Json(json!({"csrfToken":"fixture-csrf"})),
     )
 }
+async fn account_check(headers: HeaderMap, Json(body): Json<Value>) -> impl IntoResponse {
+    let cookies = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if cookies.contains("nas-session=fixture") {
+        assert_eq!(body, json!({}));
+    } else {
+        assert_eq!(body["token"], "fixture-legacy-token");
+    }
+    assert!(!cookies.contains("entry-token="));
+    Json(
+        json!({"code":0,"data":{"status":1,"account":"fixture-cloud-account",
+            "connectEntitlement":{"type":"premium","bandwidth":12,"trafficUsed":1024,"trafficPerMonth":512000,"endTime":1936742400}
+        }}),
+    )
+}
 async fn upgrade(
     State(state): State<MockNas>,
     headers: HeaderMap,
@@ -273,6 +290,7 @@ async fn mock_server_with_auth(
     let app = Router::new()
         .route("/login", get(login_page))
         .route("/app/ticket", post(ticket))
+        .route("/v1/accountapi/check", post(account_check))
         .route("/websocket", get(upgrade))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -703,4 +721,35 @@ async fn unavailable_registries_do_not_imply_revoked_session() {
     session.refresh_entry_token().await.unwrap();
     session.rpc.lock().await.close().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn fn_connect_metadata_reuses_ticket_or_legacy_auth_without_exposing_credentials() {
+    for ticket_mode in [true, false] {
+        let (base, server) = mock_server(ticket_mode).await;
+        let session = NasSession::login(
+            base,
+            "my-nas",
+            "fixture-user",
+            "fixture-password",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let info = session.fn_connect.read().await;
+        assert_eq!(info.status, "available");
+        assert_eq!(info.entitlement.as_ref().unwrap().tier, "premium");
+        let payload = serde_json::to_string(&info).unwrap();
+        for private in [
+            "fixture-cloud-account",
+            "fixture-legacy-token",
+            "fixture-entry-token",
+            "fixture-password",
+        ] {
+            assert!(!payload.contains(private));
+        }
+        session.rpc.lock().await.heartbeat().await.unwrap();
+        server.abort();
+    }
 }

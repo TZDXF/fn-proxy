@@ -78,6 +78,26 @@
     "select": "选择连接",
     "notConnected": "尚未连接 NAS"
   },
+  "fnConnect": {
+    "title": "FN Connect",
+    "tiers": {
+      "base": "Base 基础版",
+      "premium": "Premium",
+      "pro": "Pro",
+      "unknown": "未知等级"
+    },
+    "bandwidth": "带宽",
+    "bandwidthHint": "套餐带宽，并非实时测速结果",
+    "traffic": "本月高速流量",
+    "trafficHint": "用量和额度由飞牛服务端统计，不是本地代理请求数",
+    "validity": "有效期",
+    "expiresAt": "截至 {date}",
+    "unlimited": "不限流量",
+    "loading": "正在读取套餐信息…",
+    "disconnected": "连接后显示套餐与流量",
+    "unbound": "未绑定飞牛账号，暂无套餐信息",
+    "unavailable": "套餐信息暂不可用"
+  },
   "actions": {
     "operations": "操作",
     "startProxy": "开启代理",

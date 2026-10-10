@@ -36,6 +36,7 @@ describe("application internationalization", () => {
     for (const file of [
       "App.vue",
       "components/SettingsPage.vue",
+      "components/FnConnectCard.vue",
       "components/Titlebar.vue",
       "components/Titlebar.vue",
       "components/ui/UiDialog.vue",

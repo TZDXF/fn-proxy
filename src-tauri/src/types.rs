@@ -146,6 +146,7 @@ pub struct ConnectionInfo {
     pub username: String,
     pub relay: String,
     pub auth_mode: String,
+    pub fn_connect: Option<crate::fn_connect::FnConnectInfo>,
     pub message: Text,
 }
 #[derive(Clone, Serialize, Default)]

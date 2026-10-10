@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
+import FnConnectCard from "./components/FnConnectCard.vue";
 import Titlebar from "./components/Titlebar.vue";
 import { useI18n } from "vue-i18n";
 import SettingsPage from "./components/SettingsPage.vue";
@@ -306,8 +307,11 @@ async function confirmDelete() {
             <div v-for="c in savedConnections" :key="c.profile.id" class="overview-row">
               <div class="connection-avatar"><Icon name="server" :size="22" /></div>
               <div class="row-identity">
-                <strong>{{ c.profile.fnId }}</strong
-                ><span>{{ c.profile.username }}</span>
+                <strong>{{ c.profile.fnId }}</strong>
+                <div class="row-details">
+                  <span :title="c.profile.username">{{ c.profile.username }}</span>
+                  <FnConnectCard :connection="c.connection" />
+                </div>
               </div>
               <span class="badge" :class="{ success: c.proxy.running }"
                 ><span class="status-dot" :class="{ online: c.proxy.running }" />{{
@@ -345,11 +349,12 @@ async function confirmDelete() {
               }}</UiButton>
             </div>
             <div v-else class="table-scroll">
-              <table>
+              <table class="connection-table">
                 <thead>
                   <tr>
                     <th>FN ID</th>
                     <th>{{ t("connection.account") }}</th>
+                    <th>{{ t("fnConnect.title") }}</th>
                     <th>{{ t("connection.services") }}</th>
                     <th>{{ t("connection.proxy") }}</th>
                     <th class="align-right">{{ t("actions.operations") }}</th>
@@ -361,6 +366,7 @@ async function confirmDelete() {
                       <strong>{{ c.profile.fnId }}</strong>
                     </td>
                     <td>{{ c.profile.username }}</td>
+                    <td><FnConnectCard :connection="c.connection" /></td>
                     <td>
                       <UiButton
                         variant="ghost"
