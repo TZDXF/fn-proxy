@@ -2,6 +2,8 @@ import { computed, ref } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { check as checkSignedUpdate, type DownloadEvent } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { version as previewVersion } from "../../package.json";
 
 export const RELEASES_URL = "https://github.com/TZDXF/fn-proxy/releases";
@@ -16,11 +18,24 @@ interface UpdateDependencies {
   desktop: boolean;
   getVersion: () => Promise<string>;
   check: () => Promise<UpdateInfo>;
+  install?: (version: string, onEvent: (event: DownloadEvent) => void) => Promise<void>;
+  restart?: () => Promise<void>;
   open: (url: string) => Promise<unknown>;
 }
 const defaultDependencies: UpdateDependencies = {
   desktop: isTauri(),
   getVersion,
+  install: async (version, onEvent) => {
+    const update = await checkSignedUpdate({ timeout: 20000 });
+    if (!update) throw "missingInstaller";
+    try {
+      if (update.version !== version) throw "versionChanged";
+      await update.downloadAndInstall(onEvent, { timeout: 600000 });
+    } finally {
+      await update.close();
+    }
+  },
+  restart: relaunch,
   check: () => invoke<UpdateInfo>("check_for_updates"),
   open: async (url) => {
     if (isTauri()) await openUrl(url);
@@ -34,6 +49,15 @@ export function createUpdates(dependencies: UpdateDependencies = defaultDependen
   const state = ref<UpdateState>("idle");
   const latest = ref<UpdateInfo | null>(null);
   const errorKey = ref("");
+  const downloading = ref(false);
+  const installed = ref(false);
+  const installing = ref(false);
+  const downloaded = ref(0);
+  const total = ref(0);
+  const progress = computed(() =>
+    total.value > 0 ? Math.min(100, Math.floor((downloaded.value / total.value) * 100)) : null,
+  );
+  const downloadError = ref("");
   const opening = ref(false);
   const openFailed = ref(false);
   const versionFailed = ref(false);
@@ -48,7 +72,7 @@ export function createUpdates(dependencies: UpdateDependencies = defaultDependen
     }
   }
   async function check() {
-    if (!dependencies.desktop || checking.value) return;
+    if (!dependencies.desktop || checking.value || downloading.value || installed.value) return;
     state.value = "checking";
     errorKey.value = "";
     latest.value = null;
@@ -75,6 +99,44 @@ export function createUpdates(dependencies: UpdateDependencies = defaultDependen
               : "updates.networkError";
     }
   }
+  async function download() {
+    if (
+      !dependencies.desktop ||
+      downloading.value ||
+      installed.value ||
+      !latest.value?.updateAvailable
+    )
+      return;
+    const target = latest.value.latestVersion;
+    if (!target || !dependencies.install) return;
+    downloading.value = true;
+    downloadError.value = "";
+    downloaded.value = 0;
+    total.value = 0;
+    installing.value = false;
+    try {
+      await dependencies.install(target, (event) => {
+        if (event.event === "Started") total.value = event.data.contentLength ?? 0;
+        else if (event.event === "Progress") downloaded.value += event.data.chunkLength;
+        else if (event.event === "Finished") installing.value = true;
+      });
+      installed.value = true;
+    } catch (error) {
+      const known = ["missingInstaller", "versionChanged"];
+      downloadError.value =
+        "updates." + (typeof error === "string" && known.includes(error) ? error : "downloadError");
+    } finally {
+      downloading.value = false;
+    }
+  }
+  async function restart() {
+    if (!installed.value || !dependencies.restart) return;
+    try {
+      await dependencies.restart();
+    } catch {
+      downloadError.value = "updates.restartError";
+    }
+  }
   async function openRelease() {
     if (opening.value) return;
     opening.value = true;
@@ -99,6 +161,15 @@ export function createUpdates(dependencies: UpdateDependencies = defaultDependen
     }
   }
   return {
+    downloading,
+    installed,
+    installing,
+    downloaded,
+    total,
+    progress,
+    restart,
+    downloadError,
+    download,
     version,
     versionLabel,
     state,

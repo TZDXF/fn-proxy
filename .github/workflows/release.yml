@@ -26,6 +26,8 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,25 +50,56 @@ jobs:
       - run: npm run rust:check
       - name: Build Windows installer
         run: npm run desktop:build
-      - name: Publish verified installer and checksums
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Publish signed installer and update manifest
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $installers = @(Get-ChildItem -LiteralPath "src-tauri/target/release/bundle/nsis" -Filter "*.exe")
+          $bundleDirectory = "src-tauri/target/release/bundle"
+          $installers = @(Get-ChildItem -LiteralPath $bundleDirectory -Recurse -Filter "*-setup.exe" | Where-Object { $_.FullName -match "[\\/]nsis(-updater)?[\\/]" })
           if ($installers.Count -eq 0) { throw "No NSIS installer was produced" }
-          # GitHub replaces spaces in asset names with dots. Normalize before hashing.
+          $signatures = @($installers | ForEach-Object {
+            $signature = "$($_.FullName).sig"
+            if (!(Test-Path -LiteralPath $signature)) { throw "Missing updater signature: $signature" }
+            Get-Item -LiteralPath $signature
+          })
+          # GitHub replaces spaces in asset names with dots. Normalize before hashing and manifest generation.
           $assetDirectory = Join-Path $env:RUNNER_TEMP "fn-proxy-release"
           New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
           $installers = @($installers | ForEach-Object {
             $assetPath = Join-Path $assetDirectory ($_.Name -replace '[^A-Za-z0-9._-]', '.')
             Copy-Item -LiteralPath $_.FullName -Destination $assetPath -PassThru
           })
-          $checksums = @($installers | ForEach-Object {
+          $signatures = @($signatures | ForEach-Object {
+            $assetPath = Join-Path $assetDirectory ($_.Name -replace '[^A-Za-z0-9._-]', '.')
+            Copy-Item -LiteralPath $_.FullName -Destination $assetPath -PassThru
+          })
+          $checksums = @($installers + $signatures | ForEach-Object {
             $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           })
           $checksumPath = Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt"
           $checksums | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+
+          $manifestPath = Join-Path $env:RUNNER_TEMP "latest.json"
+          $manifest = [ordered]@{
+            version = $env:RELEASE_TAG.TrimStart("v")
+            notes = "See the release page for details."
+            pub_date = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = [ordered]@{}
+          }
+          foreach ($installer in $installers) {
+            $platform = if ($installer.Name -match "[._]aarch64[._]|arm64") { "windows-aarch64" } else { "windows-x86_64" }
+            $signature = Get-Item -LiteralPath (Join-Path $assetDirectory "$($installer.Name).sig")
+            $manifest.platforms[$platform] = [ordered]@{
+              signature = (Get-Content -LiteralPath $signature.FullName -Raw).Trim()
+              url = "https://github.com/TZDXF/fn-proxy/releases/download/$env:RELEASE_TAG/$($installer.Name)"
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+
           $existing = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft 2>$null
           if ($LASTEXITCODE -eq 0) {
             if ($existing -ne "true") { throw "Release already published; refusing to overwrite it" }
@@ -79,7 +112,7 @@ jobs:
             }
             if ($LASTEXITCODE -ne 0) { throw "Failed to create release draft" }
           }
-          $assets = @($installers | ForEach-Object { $_.FullName }) + @($checksumPath)
+          $assets = @($installers + $signatures | ForEach-Object { $_.FullName }) + @($checksumPath, $manifestPath)
           gh release upload $env:RELEASE_TAG @assets --clobber
           if ($LASTEXITCODE -ne 0) { throw "Failed to upload release assets; draft preserved" }
           gh release edit $env:RELEASE_TAG --draft=false --latest

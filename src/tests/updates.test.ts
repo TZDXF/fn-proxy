@@ -13,6 +13,12 @@ function fixture(desktop = true) {
     desktop,
     getVersion: vi.fn().mockResolvedValue("0.1.0"),
     check: vi.fn().mockResolvedValue(result),
+    install: vi.fn().mockImplementation(async (_version, onEvent) => {
+      onEvent({ event: "Started", data: { contentLength: 100 } });
+      onEvent({ event: "Progress", data: { chunkLength: 40 } });
+      onEvent({ event: "Finished", data: {} });
+    }),
+    restart: vi.fn().mockResolvedValue(undefined),
     open: vi.fn().mockResolvedValue(undefined),
   };
   return { updates: createUpdates(dependencies), dependencies, result };
@@ -136,5 +142,38 @@ describe("version and update checks", () => {
     await updates.openRelease();
     expect(dependencies.open).not.toHaveBeenCalled();
     expect(updates.openFailed.value).toBe(true);
+  });
+});
+
+describe("in-app signed update install", () => {
+  it("installs the checked version with progress and offers restart", async () => {
+    const { updates, dependencies } = fixture();
+    await updates.check();
+    await updates.download();
+    expect(dependencies.install).toHaveBeenCalledWith("0.2.0", expect.any(Function));
+    expect(dependencies.open).not.toHaveBeenCalled();
+    expect(updates.progress.value).toBe(40);
+    expect(updates.installing.value).toBe(true);
+    expect(updates.installed.value).toBe(true);
+    await updates.restart();
+    expect(dependencies.restart).toHaveBeenCalledOnce();
+  });
+  it("reports install failures and permits retry", async () => {
+    const { updates, dependencies } = fixture();
+    await updates.check();
+    dependencies.install.mockRejectedValueOnce("versionChanged");
+    await updates.download();
+    expect(updates.downloadError.value).toBe("updates.versionChanged");
+    expect(updates.installed.value).toBe(false);
+    await updates.download();
+    expect(updates.downloadError.value).toBe("");
+    expect(updates.installed.value).toBe(true);
+  });
+  it("does not install before checking or in browser preview", async () => {
+    for (const desktop of [true, false]) {
+      const { updates, dependencies } = fixture(desktop);
+      await updates.download();
+      expect(dependencies.install).not.toHaveBeenCalled();
+    }
   });
 });

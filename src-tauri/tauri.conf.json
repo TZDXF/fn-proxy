@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "FN Proxy · NAS 服务直达本机",
+        "title": "FN Proxy \u00b7 NAS \u670d\u52a1\u76f4\u8fbe\u672c\u673a",
         "width": 1280,
         "height": 880,
         "decorations": false,
@@ -34,6 +34,16 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3NUQ5RjNGOTAwNTBGMjIKUldRaUR3V1FQNTlkNTViaTlwVlA4RnV5S092bDY5eTVRVXBwNUtwNXlBZ1plUlBPSGtmai92S0oK",
+      "endpoints": ["https://github.com/TZDXF/fn-proxy/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

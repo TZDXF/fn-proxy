@@ -27,6 +27,7 @@ import { preferences, type AppLocale, type ThemeMode } from "../lib/preferences"
 const { t } = useI18n({ useScope: "global" });
 const { versionLabel, state, latest, errorKey, checking, opening, openFailed, versionFailed } =
   updates;
+const { downloading, installed, installing, progress, downloadError } = updates;
 const { locale, theme } = preferences;
 const languages = [
   { value: "zh-CN", label: "简体中文" },
@@ -145,12 +146,30 @@ function selectTheme(event: Event) {
           <strong class="update-version">{{ versionLabel || t("common.reading") }}</strong>
         </div>
         <div class="update-actions">
+          <UiButton
+            v-if="state === 'available' && !installed"
+            :disabled="downloading"
+            @click="updates.download"
+          >
+            {{
+              t(
+                installing
+                  ? "updates.installing"
+                  : downloading
+                    ? "updates.downloading"
+                    : "updates.download",
+              )
+            }}
+          </UiButton>
+          <UiButton v-if="installed" variant="primary" @click="updates.restart">{{
+            t("updates.restart")
+          }}</UiButton>
           <UiButton :disabled="opening" @click="updates.openRelease">
-            {{ t(state === "available" ? "updates.download" : "updates.releasePage") }}
+            {{ t("updates.releasePage") }}
           </UiButton>
           <UiButton
             variant="primary"
-            :disabled="checking || !updates.desktop"
+            :disabled="checking || downloading || installed || !updates.desktop"
             @click="updates.check"
           >
             <Icon name="refresh" :size="16" />
@@ -159,6 +178,13 @@ function selectTheme(event: Event) {
         </div>
       </div>
       <div class="update-content">
+        <p v-if="downloading" class="update-status" role="status" aria-live="polite">
+          {{ t(installing ? "updates.installing" : "updates.downloading") }}
+          <span v-if="!installing && progress !== null">{{ progress }}%</span>
+        </p>
+        <p v-if="installed" class="update-status" role="status">{{ t("updates.installed") }}</p>
+        <p v-if="state === 'available'" class="settings-hint">{{ t("updates.installHint") }}</p>
+        <p v-if="downloadError" class="update-error" role="alert">{{ t(downloadError) }}</p>
         <p
           v-if="state !== 'idle' || !updates.desktop"
           class="update-status"
