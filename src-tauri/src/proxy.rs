@@ -410,6 +410,9 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
             "The request address is not allowed; cross-site or unexpected Host requests are blocked.",
         );
     }
+    if let Some(recovery) = &ctx.recovery {
+        recovery.reset_idle();
+    }
     // The validated request authority must survive redirects on remote LAN clients.
     let local_host = request
         .headers()

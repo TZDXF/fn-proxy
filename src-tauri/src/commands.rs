@@ -522,7 +522,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
         // Do not keep a stale session alive in this task after request-driven recovery.
         drop(current);
         let mut domains_refreshed = tokio::time::Instant::now();
-        let mut refreshed = tokio::time::Instant::now();
+        state.recovery.reset_idle();
         let mut generation = state.recovery.generation();
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -532,7 +532,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
             let observed = state.recovery.generation();
             if observed != generation {
                 generation = observed;
-                refreshed = tokio::time::Instant::now();
+                state.recovery.reset_idle();
             }
             let current = state.session.read().await.clone();
             let alive = if let Some(current) = &current {
@@ -567,7 +567,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
                     break;
                 }
                 generation = state.recovery.generation();
-                refreshed = tokio::time::Instant::now();
+                state.recovery.reset_idle();
                 continue;
             }
             let current = current.unwrap();
@@ -589,24 +589,24 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
                             break;
                         }
                         generation = state.recovery.generation();
-                        refreshed = tokio::time::Instant::now();
+                        state.recovery.reset_idle();
                         domains_refreshed = tokio::time::Instant::now();
                         continue;
                     }
                 }
                 domains_refreshed = tokio::time::Instant::now();
             }
-            if refreshed.elapsed() >= Duration::from_secs(15 * 60) {
+            if state.recovery.idle_for(Duration::from_secs(15 * 60)) {
                 if state
                     .recovery
-                    .maintain(RecoveryReason::PeriodicRefresh, observed, &cancel)
+                    .maintain(RecoveryReason::IdleRefresh, observed, &cancel)
                     .await
                     .is_err()
                 {
                     break;
                 }
                 generation = state.recovery.generation();
-                refreshed = tokio::time::Instant::now();
+                state.recovery.reset_idle();
             }
         }
     });

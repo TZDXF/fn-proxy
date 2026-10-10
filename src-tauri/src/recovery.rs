@@ -23,6 +23,7 @@ pub enum RecoveryReason {
     HeartbeatFailed,
     EntryExpired,
     PeriodicRefresh,
+    IdleRefresh,
     DomainInventoryFailed,
 }
 impl RecoveryReason {
@@ -32,6 +33,7 @@ impl RecoveryReason {
             Self::HeartbeatFailed => "heartbeat_failed",
             Self::EntryExpired => "entry_expired",
             Self::PeriodicRefresh => "periodic_refresh",
+            Self::IdleRefresh => "idle_refresh",
             Self::DomainInventoryFailed => "domain_inventory_failed",
         }
     }
@@ -43,7 +45,10 @@ impl RecoveryReason {
     pub fn refresh_first(self) -> bool {
         matches!(
             self,
-            Self::EntryExpired | Self::PeriodicRefresh | Self::DomainInventoryFailed
+            Self::EntryExpired
+                | Self::PeriodicRefresh
+                | Self::IdleRefresh
+                | Self::DomainInventoryFailed
         )
     }
 }
@@ -62,8 +67,20 @@ pub struct Recovery {
     diagnostic: RwLock<Option<DiagnosticHandler>>,
     failure: StdMutex<Option<(u64, Text)>>,
     last_repair: StdMutex<Option<tokio::time::Instant>>,
+    idle_since: StdMutex<Option<tokio::time::Instant>>,
 }
 impl Recovery {
+    /// Only accepted proxy requests and completed maintenance reset this clock.
+    /// Heartbeats and inventory polling must not hide an idle proxy.
+    pub fn reset_idle(&self) {
+        *self.idle_since.lock().unwrap() = Some(tokio::time::Instant::now());
+    }
+    pub fn idle_for(&self, duration: Duration) -> bool {
+        self.idle_since
+            .lock()
+            .unwrap()
+            .is_some_and(|at| at.elapsed() >= duration)
+    }
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -72,6 +89,7 @@ impl Recovery {
         *self.diagnostic.write().unwrap() = Some(diagnostic);
         *self.failure.lock().unwrap() = None;
         *self.last_repair.lock().unwrap() = None;
+        self.reset_idle();
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
     pub fn clear(&self) {
@@ -146,6 +164,10 @@ impl Recovery {
                 .is_some_and(|at| at.elapsed() < Duration::from_secs(10))
         {
             return Err(error("recovery.cooldown"));
+        }
+        // Activity may have arrived while this maintenance waited for the gate.
+        if reason == RecoveryReason::IdleRefresh && !self.idle_for(Duration::from_secs(15 * 60)) {
+            return Ok(());
         }
         let handler = self
             .handler
@@ -269,6 +291,19 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+
+    #[test]
+    fn idle_refresh_tracks_requests_and_maintenance() {
+        let recovery = Recovery::default();
+        let threshold = Duration::from_secs(15 * 60);
+        assert!(!recovery.idle_for(threshold));
+        *recovery.idle_since.lock().unwrap() = Some(tokio::time::Instant::now() - threshold);
+        assert!(recovery.idle_for(threshold));
+        recovery.reset_idle();
+        assert!(!recovery.idle_for(threshold));
+        assert!(RecoveryReason::IdleRefresh.refresh_first());
+        assert_eq!(RecoveryReason::IdleRefresh.label(), "idle_refresh");
+    }
 
     #[test]
     fn unavailable_registries_probe_authentication_before_relogin() {
