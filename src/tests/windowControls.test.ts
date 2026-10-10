@@ -174,9 +174,9 @@ describe("custom titlebar window controls", () => {
 const read = (path: string) =>
   readFileSync(new URL(path, new URL("../../", import.meta.url)), "utf8");
 describe("custom titlebar desktop integration", () => {
-  it("shows only the application icon without its name or description", () => {
+  it("keeps the titlebar free of application branding", () => {
     const titlebar = read("src/components/Titlebar.vue");
-    expect(titlebar).toContain('src="/app-icon.svg"');
+    expect(titlebar).not.toContain("<img");
     expect(titlebar).not.toContain("settings.title");
     expect(titlebar).not.toContain("titlebar-title");
   });

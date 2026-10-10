@@ -40,7 +40,26 @@ describe("application scroll layout", () => {
     expect(main).toMatch(/min-height:\s*0;/);
     expect(main).toMatch(/overflow-y:\s*auto;/);
     expect(rule(".titlebar")).toContain("position: fixed");
-    expect(rule(".sidebar")).toContain("inset: var(--titlebar-height) auto 0 0");
+    expect(rule(".titlebar")).toContain("inset: 0 0 auto var(--sidebar-width)");
+    expect(rule(".sidebar")).toContain("width: var(--sidebar-width)");
+    expect(rule(".sidebar")).toContain("inset: 0 auto 0 0");
+  });
+});
+
+describe("continuous desktop titlebar", () => {
+  it("extends the existing drag region across the sidebar top", () => {
+    const drag = rule(".titlebar-drag-region::before");
+    expect(drag).toContain("position: fixed");
+    expect(drag).toContain("inset: 0 auto auto 0");
+    expect(drag).toContain("width: var(--sidebar-width)");
+    expect(drag).toContain("height: var(--desktop-titlebar-height)");
+  });
+
+  it("starts the sidebar divider below the desktop titlebar", () => {
+    expect(rule(".sidebar")).not.toContain("border-right:");
+    const divider = rule(".sidebar::after");
+    expect(divider).toContain("inset: var(--titlebar-height) 0 0 auto");
+    expect(divider).toContain("pointer-events: none");
   });
 });
 

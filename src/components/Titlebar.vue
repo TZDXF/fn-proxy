@@ -14,8 +14,8 @@ onUnmounted(controls.dispose);
 
 <template>
   <header :class="['titlebar', { 'titlebar--inactive': !focused }]">
+    <!-- The drag region also covers the sidebar top through its CSS pseudo-element. -->
     <div class="titlebar-drag-region" @mousedown="controls.drag">
-      <img src="/app-icon.svg" alt="" width="20" height="20" draggable="false" />
       <span v-if="failed" class="titlebar-error" role="alert">{{ t("window.actionFailed") }}</span>
     </div>
     <div class="titlebar-controls" role="group" :aria-label="t('window.controls')">
