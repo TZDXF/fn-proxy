@@ -1203,3 +1203,33 @@ td strong {
     gap: 12px;
   }
 }
+
+.service-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.service-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.service-icon img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+.address-cell a {
+  min-width: 0;
+  text-decoration: none;
+}
+.address-cell a:hover {
+  text-decoration: underline;
+}
+.address-cell .button {
+  flex-shrink: 0;
+}

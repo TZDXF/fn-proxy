@@ -7,6 +7,7 @@ import { useI18n } from "vue-i18n";
 import SettingsPage from "./components/SettingsPage.vue";
 import { Label, TabsRoot, TabsList, TabsTrigger, TabsContent } from "reka-ui";
 import Icon from "./components/Icon.vue";
+import ServiceIcon from "./components/ServiceIcon.vue";
 import UiButton from "./components/ui/UiButton.vue";
 import UiInput from "./components/ui/UiInput.vue";
 import UiSwitch from "./components/ui/UiSwitch.vue";
@@ -41,7 +42,6 @@ const {
   section,
   busy,
   notice,
-  connection,
   proxy,
   discovered,
   inventory,
@@ -488,18 +488,50 @@ async function confirmDelete() {
                 <tbody>
                   <tr v-for="route in profile.services" :key="route.id">
                     <td>
-                      <strong>{{ route.name }}</strong
-                      ><span class="cell-sub">NAS :{{ route.nasPort }}</span>
-                    </td>
-                    <td>
-                      <span class="url-text" :title="route.upstream">{{ route.upstream }}</span>
+                      <div class="service-name-cell">
+                        <ServiceIcon
+                          :url="
+                            proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
+                              ? `${w.localUrl(route.localPort)}favicon.ico`
+                              : ''
+                          "
+                        />
+                        <div>
+                          <strong>{{ route.name }}</strong
+                          ><span class="cell-sub">NAS :{{ route.nasPort }}</span>
+                        </div>
+                      </div>
                     </td>
                     <td>
                       <div class="address-cell">
-                        <code>{{ w.localUrl(route.localPort) }}</code
-                        ><UiButton
+                        <a
+                          class="url-text"
+                          :href="route.upstream"
+                          :title="t('actions.openRemote', { name: route.name })"
+                          @click.prevent="w.open(route.upstream)"
+                          >{{ route.upstream }}</a
+                        >
+                        <UiButton
+                          variant="ghost"
+                          :aria-label="t('actions.copyRemote', { name: route.name })"
+                          :title="t('actions.copyRemote', { name: route.name })"
+                          @click="w.copy(route.upstream)"
+                          ><Icon name="copy" :size="15"
+                        /></UiButton>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="address-cell">
+                        <a
+                          :href="w.localUrl(route.localPort)"
+                          :title="t('actions.openLocal', { name: route.name })"
+                          @click.prevent="w.open(route.localPort)"
+                          ><code>{{ w.localUrl(route.localPort) }}</code></a
+                        >
+                        <UiButton
                           variant="ghost"
                           :aria-label="t('actions.copyLocal', { name: route.name })"
+                          :title="t('actions.copyLocal', { name: route.name })"
                           @click="w.copy(w.localUrl(route.localPort))"
                           ><Icon name="copy" :size="15"
                         /></UiButton>
@@ -532,29 +564,16 @@ async function confirmDelete() {
                       <div class="row-actions">
                         <UiButton
                           variant="ghost"
-                          :disabled="!!busy || !connection.connected"
-                          :aria-label="t('actions.test', { name: route.name })"
-                          @click="w.probe(route)"
-                          ><Icon name="refresh" :size="16" /></UiButton
-                        ><UiButton
-                          variant="ghost"
-                          :disabled="
-                            !!busy ||
-                            !proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
-                          "
-                          :aria-label="t('actions.open', { name: route.name })"
-                          @click="w.open(route.localPort)"
-                          ><Icon name="external" :size="16" /></UiButton
-                        ><UiButton
-                          variant="ghost"
                           :disabled="!!busy"
                           :aria-label="t('actions.edit', { name: route.name })"
+                          :title="t('actions.edit', { name: route.name })"
                           @click="newService(route)"
                           ><Icon name="edit" :size="16" /></UiButton
                         ><UiButton
                           variant="ghost"
                           :disabled="!!busy"
                           :aria-label="t('actions.delete', { name: route.name })"
+                          :title="t('actions.delete', { name: route.name })"
                           @click="
                             deleteTarget = { kind: 'service', id: route.id, name: route.name }
                           "

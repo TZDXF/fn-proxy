@@ -514,9 +514,9 @@ export function useWorkspace() {
       notify(t("notice.copyFailed"), true);
     }
   }
-  async function open(port: number) {
+  async function open(target: number | string) {
     await run("open-service", async () => {
-      await openUrl(localUrl(port));
+      await openUrl(typeof target === "number" ? localUrl(target) : target);
     });
   }
   async function syncTrayLabels() {
