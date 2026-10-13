@@ -63,6 +63,7 @@ pub fn run() {
             commands::get_bootstrap,
             commands::set_allow_lan_access,
             commands::set_auto_start_proxy,
+            commands::set_lightweight_mode,
             commands::get_snapshot,
             commands::get_logs,
             commands::connect_nas,
@@ -84,6 +85,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("FN Proxy startup failed");
     app.run(|handle, event| {
+        // Closing the last webview must not terminate background proxy tasks.
+        // Explicit quit/restart carries an exit code and must remain allowed.
+        if let tauri::RunEvent::ExitRequested {
+            code: None, api, ..
+        } = &event
+        {
+            api.prevent_exit();
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             commands::shutdown(handle);
         }

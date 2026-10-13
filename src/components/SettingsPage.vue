@@ -12,6 +12,7 @@ const { updates } = defineProps<{
   launchAtLogin: boolean;
   launchAtLoginDisabled: boolean;
   autoStartProxy: boolean;
+  lightweightMode: boolean;
   startupDisabled: boolean;
   allowLanAccess: boolean;
   networkDisabled: boolean;
@@ -21,6 +22,7 @@ const emit = defineEmits<{
   "update:launchAtLogin": [value: boolean];
   "update:allowLanAccess": [value: boolean];
   "update:autoStartProxy": [value: boolean];
+  "update:lightweightMode": [value: boolean];
 }>();
 import { preferences, type AppLocale, type ThemeMode } from "../lib/preferences";
 
@@ -107,6 +109,19 @@ function selectTheme(event: Event) {
     </section>
     <section class="panel settings-panel" aria-labelledby="proxy-heading">
       <h2 id="proxy-heading">{{ t("settings.proxy") }}</h2>
+      <div class="settings-row">
+        <div>
+          <label for="lightweight-mode">{{ t("settings.lightweightMode") }}</label>
+          <p class="settings-hint">{{ t("settings.lightweightModeDescription") }}</p>
+        </div>
+        <UiSwitch
+          id="lightweight-mode"
+          :model-value="lightweightMode"
+          :disabled="startupDisabled"
+          :label="t('settings.lightweightMode')"
+          @update:model-value="emit('update:lightweightMode', $event)"
+        />
+      </div>
       <div class="settings-row">
         <div>
           <label for="auto-start-proxy">{{ t("settings.autoStartProxy") }}</label>

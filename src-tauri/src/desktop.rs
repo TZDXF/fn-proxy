@@ -1,5 +1,6 @@
 use crate::text::Text;
 use serde::Deserialize;
+use std::sync::{atomic::Ordering, Arc};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
@@ -58,14 +59,30 @@ pub fn set_tray_labels(app: AppHandle, handles: State<'_, TrayHandles>, labels: 
 }
 
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        let result = window
-            .show()
-            .and_then(|()| window.unminimize())
-            .and_then(|()| window.set_focus());
-        if let Err(error) = result {
-            eprintln!("Failed to restore FN Proxy window: {error}");
+    let window = app
+        .get_webview_window(MAIN_WINDOW)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|config| config.label == MAIN_WINDOW)
+                .expect("main window configuration must exist");
+            tauri::WebviewWindowBuilder::from_config(app, config)?.build()
+        });
+    match window {
+        Ok(window) => {
+            let result = window
+                .show()
+                .and_then(|()| window.unminimize())
+                .and_then(|()| window.set_focus());
+            if let Err(error) = result {
+                eprintln!("Failed to restore FN Proxy window: {error}");
+            }
         }
+        Err(error) => eprintln!("Failed to recreate FN Proxy window: {error}"),
     }
 }
 
@@ -112,7 +129,13 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         return;
     }
     if let WindowEvent::CloseRequested { api, .. } = event {
-        // Keep the webview and Rust tasks alive; only an explicit tray quit exits.
+        let state = window.state::<Arc<crate::commands::AppState>>();
+        if state.lightweight_mode.load(Ordering::Relaxed) {
+            // Allow native close to destroy the window and its WebView. App-level
+            // ExitRequested handling keeps Rust state, tray and proxies alive.
+            return;
+        }
+        // Normal mode keeps the webview alive for instant restoration.
         // If hiding fails, allow normal close rather than leaving an inaccessible app.
         match window.hide() {
             Ok(()) => api.prevent_close(),

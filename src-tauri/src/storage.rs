@@ -19,6 +19,7 @@ pub fn load_profiles(path: &Path) -> Result<WorkspaceProfiles> {
         StoredProfiles::Workspace(workspace) => Ok(workspace),
         StoredProfiles::Legacy(profile) => Ok(WorkspaceProfiles {
             auto_start_proxy: false,
+            lightweight_mode: false,
             allow_lan_access: false,
             profiles: vec![profile],
         }),
@@ -116,6 +117,7 @@ mod tests {
         .unwrap();
         let workspace = load_profiles(&file.0).unwrap();
         assert_eq!(workspace.profiles.len(), 1);
+        assert!(!workspace.lightweight_mode);
         let profile = &workspace.profiles[0];
         assert_eq!(profile.id, "default");
         assert_eq!(profile.fn_id, "my-nas");
@@ -133,6 +135,7 @@ mod tests {
         assert!(load_profiles(&file.0).unwrap().profiles.is_empty());
         let mut workspace = WorkspaceProfiles {
             auto_start_proxy: false,
+            lightweight_mode: false,
             allow_lan_access: false,
             profiles: vec![
                 Profile {

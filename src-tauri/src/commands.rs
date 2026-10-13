@@ -103,6 +103,7 @@ impl ConnectionState {
 }
 pub struct AppState {
     auto_start_proxy: AtomicBool,
+    pub(crate) lightweight_mode: AtomicBool,
     allow_lan_access: AtomicBool,
     pub profile_path: PathBuf,
     connections: StdMutex<BTreeMap<String, Arc<ConnectionState>>>,
@@ -132,6 +133,7 @@ impl AppState {
         Self {
             allow_lan_access: AtomicBool::new(workspace.allow_lan_access),
             auto_start_proxy: AtomicBool::new(workspace.auto_start_proxy),
+            lightweight_mode: AtomicBool::new(workspace.lightweight_mode),
             profile_path,
             connections: StdMutex::new(connections),
             operation: Mutex::new(()),
@@ -202,6 +204,7 @@ impl AppState {
             removed,
             self.allow_lan_access.load(Ordering::Relaxed),
             self.auto_start_proxy.load(Ordering::Relaxed),
+            self.lightweight_mode.load(Ordering::Relaxed),
         )
     }
     fn persist_with_access(
@@ -210,6 +213,7 @@ impl AppState {
         removed: Option<&str>,
         allow_lan_access: bool,
         auto_start_proxy: bool,
+        lightweight_mode: bool,
     ) -> Result<()> {
         let mut profiles: Vec<Profile> = self
             .all()
@@ -230,6 +234,7 @@ impl AppState {
                 profiles,
                 allow_lan_access,
                 auto_start_proxy,
+                lightweight_mode,
             },
         )
     }
@@ -708,6 +713,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
 pub fn get_bootstrap(state: State<'_, Arc<AppState>>) -> Bootstrap {
     Bootstrap {
         auto_start_proxy: state.auto_start_proxy.load(Ordering::Relaxed),
+        lightweight_mode: state.lightweight_mode.load(Ordering::Relaxed),
         allow_lan_access: state.allow_lan_access.load(Ordering::Relaxed),
         profiles: state
             .all()
@@ -740,6 +746,7 @@ async fn set_lan_access(manager: &AppState, enabled: bool) -> Result<()> {
         None,
         enabled,
         manager.auto_start_proxy.load(Ordering::Relaxed),
+        manager.lightweight_mode.load(Ordering::Relaxed),
     )?;
     manager.allow_lan_access.store(enabled, Ordering::Relaxed);
     Ok(())
@@ -751,9 +758,26 @@ async fn set_auto_start(manager: &AppState, enabled: bool) -> Result<()> {
         None,
         manager.allow_lan_access.load(Ordering::Relaxed),
         enabled,
+        manager.lightweight_mode.load(Ordering::Relaxed),
     )?;
     manager.auto_start_proxy.store(enabled, Ordering::Relaxed);
     Ok(())
+}
+async fn set_lightweight(manager: &AppState, enabled: bool) -> Result<()> {
+    let _workspace_guard = manager.operation.lock().await;
+    manager.persist_with_access(
+        None,
+        None,
+        manager.allow_lan_access.load(Ordering::Relaxed),
+        manager.auto_start_proxy.load(Ordering::Relaxed),
+        enabled,
+    )?;
+    manager.lightweight_mode.store(enabled, Ordering::Relaxed);
+    Ok(())
+}
+#[tauri::command]
+pub async fn set_lightweight_mode(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<()> {
+    set_lightweight(state.inner(), enabled).await
 }
 #[tauri::command]
 pub async fn set_auto_start_proxy(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<()> {
@@ -1351,6 +1375,7 @@ mod tests {
             )),
             WorkspaceProfiles {
                 auto_start_proxy: false,
+                lightweight_mode: false,
                 allow_lan_access: false,
                 profiles: vec![
                     Profile {
@@ -1584,6 +1609,37 @@ mod tests {
         manager.profile_path = blocker.join("profile.json");
         assert!(set_auto_start(&manager, true).await.is_err());
         assert!(!manager.auto_start_proxy.load(Ordering::Relaxed));
+        std::fs::remove_file(blocker).unwrap();
+    }
+    #[tokio::test]
+    async fn lightweight_setting_persists_and_survives_other_setting_changes() {
+        let manager = manager();
+        assert!(!manager.lightweight_mode.load(Ordering::Relaxed));
+        set_lightweight(&manager, true).await.unwrap();
+        set_lan_access(&manager, true).await.unwrap();
+        set_auto_start(&manager, true).await.unwrap();
+        manager.persist(None, None).unwrap();
+        let stored = storage::load_profiles(&manager.profile_path).unwrap();
+        assert!(stored.lightweight_mode);
+        assert!(stored.allow_lan_access);
+        let restored = AppState::new(manager.profile_path.clone(), stored);
+        assert!(restored.lightweight_mode.load(Ordering::Relaxed));
+        set_lightweight(&restored, false).await.unwrap();
+        assert!(
+            !storage::load_profiles(&manager.profile_path)
+                .unwrap()
+                .lightweight_mode
+        );
+        let _ = std::fs::remove_file(&manager.profile_path);
+    }
+    #[tokio::test]
+    async fn lightweight_save_failure_preserves_effective_setting() {
+        let mut manager = manager();
+        let blocker = manager.profile_path.clone();
+        std::fs::write(&blocker, "not a directory").unwrap();
+        manager.profile_path = blocker.join("profile.json");
+        assert!(set_lightweight(&manager, true).await.is_err());
+        assert!(!manager.lightweight_mode.load(Ordering::Relaxed));
         std::fs::remove_file(blocker).unwrap();
     }
     #[tokio::test]

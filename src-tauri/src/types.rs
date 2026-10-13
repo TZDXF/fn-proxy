@@ -25,6 +25,8 @@ pub struct WorkspaceProfiles {
     #[serde(default)]
     pub auto_start_proxy: bool,
     #[serde(default)]
+    pub lightweight_mode: bool,
+    #[serde(default)]
     pub allow_lan_access: bool,
     pub profiles: Vec<Profile>,
 }
@@ -119,6 +121,8 @@ pub struct ServiceInventory {
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
     pub auto_start_proxy: bool,
+    #[serde(default)]
+    pub lightweight_mode: bool,
     pub allow_lan_access: bool,
     pub profiles: Vec<SavedProfile>,
 }

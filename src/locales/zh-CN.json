@@ -164,6 +164,8 @@
     "general": "通用",
     "startup": "启动设置",
     "startupDescription": "设置应用启动时的代理行为",
+    "lightweightMode": "轻量模式",
+    "lightweightModeDescription": "关闭窗口时释放界面 WebView 内存，代理和认证继续在后台运行。点击托盘图标重新打开界面；未保存的界面输入将丢失。",
     "autoStartProxy": "启动时自动开启代理",
     "autoStartProxyDescription": "打开应用后，使用已保存的密码启动代理；非开机自启。",
     "description": "管理界面语言、外观和代理访问范围。设置会自动保存在此设备。",

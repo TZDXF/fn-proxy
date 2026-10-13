@@ -98,6 +98,7 @@ export function useWorkspace() {
   const busy = ref("");
   const allowLanAccess = ref(false);
   const autoStartProxy = ref(false);
+  const lightweightMode = ref(false);
   const launchAtLogin = ref(false);
   const launchAtLoginReady = ref(false);
   async function setLaunchAtLogin(enabled: boolean) {
@@ -111,6 +112,13 @@ export function useWorkspace() {
     await run("auto-start-proxy", async () => {
       await invoke("set_auto_start_proxy", { enabled });
       autoStartProxy.value = enabled;
+    });
+  }
+  async function setLightweightMode(enabled: boolean) {
+    if (!settingsReady.value || busy.value) return;
+    await run("lightweight-mode", async () => {
+      await invoke("set_lightweight_mode", { enabled });
+      lightweightMode.value = enabled;
     });
   }
   const settingsReady = ref(false);
@@ -547,11 +555,13 @@ export function useWorkspace() {
       await syncTrayLabels();
       const bootstrap = await invoke<{
         autoStartProxy: boolean;
+        lightweightMode: boolean;
         allowLanAccess: boolean;
         profiles: { profile: Profile; hasSavedPassword: boolean }[];
       }>("get_bootstrap");
       allowLanAccess.value = bootstrap.allowLanAccess === true;
       autoStartProxy.value = bootstrap.autoStartProxy === true;
+      lightweightMode.value = bootstrap.lightweightMode === true;
       if (bootstrap.profiles.length) {
         connections.splice(
           0,
@@ -605,6 +615,8 @@ export function useWorkspace() {
     desktop,
     allowLanAccess,
     autoStartProxy,
+    lightweightMode,
+    setLightweightMode,
     setAutoStartProxy,
     launchAtLogin,
     launchAtLoginReady,

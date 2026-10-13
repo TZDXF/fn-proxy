@@ -1215,3 +1215,56 @@ describe("automatic recovery failure notices", () => {
     expect(w.notice.value).toBeNull();
   });
 });
+
+describe("lightweight mode settings", () => {
+  it("defaults to disabled and blocks changes before backend state is ready", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    expect(w.lightweightMode.value).toBe(false);
+    expect(w.settingsReady.value).toBe(false);
+    await w.setLightweightMode(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+  it("restores the backend setting even when no connections have been saved", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_bootstrap") return { lightweightMode: true, profiles: [] };
+      if (command === "get_snapshot") return { connections: [] };
+      if (command === "get_logs") return [];
+    });
+    const w = useWorkspace();
+    await mocks.mounted[0]!();
+    expect(w.lightweightMode.value).toBe(true);
+    expect(w.settingsReady.value).toBe(true);
+  });
+  it("saves only through backend IPC and updates the switch after success", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    let complete!: () => void;
+    mocks.invoke.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const saved = w.setLightweightMode(true);
+    expect(w.busy.value).toBe("lightweight-mode");
+    expect(w.lightweightMode.value).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith("set_lightweight_mode", { enabled: true });
+    complete();
+    await saved;
+    expect(w.lightweightMode.value).toBe(true);
+    expect(w.busy.value).toBe("");
+  });
+  it("keeps the previous setting and reports a failed save", async () => {
+    mocks.desktop = true;
+    mocks.invoke.mockRejectedValue(new Error("save failed"));
+    const w = useWorkspace();
+    w.settingsReady.value = true;
+    await w.setLightweightMode(true);
+    expect(w.lightweightMode.value).toBe(false);
+    expect(w.notice.value).toEqual({ message: "save failed", error: true });
+    expect(w.busy.value).toBe("");
+  });
+});

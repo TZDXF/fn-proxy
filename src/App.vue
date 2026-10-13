@@ -627,6 +627,8 @@ async function confirmDelete() {
             :launch-at-login-disabled="!desktop || !w.launchAtLoginReady.value || Boolean(busy)"
             @update:launch-at-login="w.setLaunchAtLogin"
             :auto-start-proxy="w.autoStartProxy.value"
+            :lightweight-mode="w.lightweightMode.value"
+            @update:lightweight-mode="w.setLightweightMode"
             :startup-disabled="!desktop || !settingsReady || Boolean(busy)"
             @update:auto-start-proxy="w.setAutoStartProxy"
             :updates="updates"

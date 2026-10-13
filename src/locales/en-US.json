@@ -164,6 +164,8 @@
     "general": "General",
     "startup": "Startup",
     "startupDescription": "Choose how proxies behave when the app starts",
+    "lightweightMode": "Lightweight mode",
+    "lightweightModeDescription": "Release the UI WebView when closing the window. Proxies and authentication keep running. Click the tray icon to reopen; unsaved UI input will be lost.",
     "autoStartProxy": "Start proxies automatically",
     "autoStartProxyDescription": "Start proxies with saved passwords when the app opens, not at system startup.",
     "description": "Manage the interface language, appearance, and proxy access scope. Settings are saved automatically on this device.",
