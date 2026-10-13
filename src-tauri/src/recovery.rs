@@ -20,6 +20,7 @@ const REQUEST_WAIT: Duration = Duration::from_secs(70);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryReason {
     SessionUnavailable,
+    UpstreamFailed,
     HeartbeatFailed,
     EntryExpired,
     PeriodicRefresh,
@@ -30,6 +31,7 @@ impl RecoveryReason {
     fn label(self) -> &'static str {
         match self {
             Self::SessionUnavailable => "session_unavailable",
+            Self::UpstreamFailed => "upstream_failed",
             Self::HeartbeatFailed => "heartbeat_failed",
             Self::EntryExpired => "entry_expired",
             Self::PeriodicRefresh => "periodic_refresh",
@@ -39,13 +41,15 @@ impl RecoveryReason {
     }
     pub fn for_inventory_error(error: &AppError) -> Option<Self> {
         // Neither a partial source permission failure nor malformed registry data
-        // alone proves logout. Probe authentication only when all sources failed.
-        (error.text().code == "inventory.sourcesUnavailable").then_some(Self::DomainInventoryFailed)
+        // alone proves logout. Probe when all sources failed or the overall read timed out.
+        (error.text().code == "inventory.sourcesUnavailable" || error.retryable())
+            .then_some(Self::DomainInventoryFailed)
     }
     pub fn refresh_first(self) -> bool {
         matches!(
             self,
-            Self::EntryExpired
+            Self::UpstreamFailed
+                | Self::EntryExpired
                 | Self::PeriodicRefresh
                 | Self::IdleRefresh
                 | Self::DomainInventoryFailed
@@ -67,6 +71,7 @@ pub struct Recovery {
     diagnostic: RwLock<Option<DiagnosticHandler>>,
     failure: StdMutex<Option<(u64, Text)>>,
     last_repair: StdMutex<Option<tokio::time::Instant>>,
+    last_probe: StdMutex<Option<tokio::time::Instant>>,
     idle_since: StdMutex<Option<tokio::time::Instant>>,
 }
 impl Recovery {
@@ -89,6 +94,7 @@ impl Recovery {
         *self.diagnostic.write().unwrap() = Some(diagnostic);
         *self.failure.lock().unwrap() = None;
         *self.last_repair.lock().unwrap() = None;
+        *self.last_probe.lock().unwrap() = None;
         self.reset_idle();
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
@@ -96,6 +102,7 @@ impl Recovery {
         *self.handler.write().unwrap() = None;
         *self.failure.lock().unwrap() = None;
         *self.last_repair.lock().unwrap() = None;
+        *self.last_probe.lock().unwrap() = None;
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
     pub fn log(&self, level: &str, text: Text) {
@@ -103,6 +110,27 @@ impl Recovery {
         if let Some(observer) = observer {
             observer(level, text);
         }
+    }
+    /// Probe authentication in the background, never replay the failed HTTP request.
+    /// Per-connection throttling and the repair gate bound concurrent failure bursts.
+    pub fn probe_upstream(self: &Arc<Self>, observed: u64, cancel: &CancellationToken) {
+        if cancel.is_cancelled() || self.generation() != observed {
+            return;
+        }
+        let mut last = self.last_probe.lock().unwrap();
+        if last.is_some_and(|at| at.elapsed() < Duration::from_secs(30)) {
+            return;
+        }
+        *last = Some(tokio::time::Instant::now());
+        let recovery = self.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            if !cancel.is_cancelled() {
+                let _ = recovery
+                    .maintain(RecoveryReason::UpstreamFailed, observed, &cancel)
+                    .await;
+            }
+        });
     }
     pub async fn recover(
         self: &Arc<Self>,
@@ -294,6 +322,57 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn upstream_probes_are_coalesced_throttled_and_generation_scoped() {
+        let recovery = Arc::new(Recovery::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(Notify::new());
+        let count = calls.clone();
+        let done = finished.clone();
+        recovery.configure(
+            Arc::new(move |reason| {
+                assert_eq!(reason, RecoveryReason::UpstreamFailed);
+                assert!(reason.refresh_first());
+                let count = count.clone();
+                let done = done.clone();
+                Box::pin(async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    done.notify_one();
+                    Ok(())
+                })
+            }),
+            Arc::new(|_, _| {}),
+        );
+        let cancel = CancellationToken::new();
+        let observed = recovery.generation();
+        for _ in 0..100 {
+            recovery.probe_upstream(observed, &cancel);
+        }
+        tokio::time::timeout(Duration::from_secs(1), finished.notified())
+            .await
+            .unwrap();
+        // Wait for the shared repair to finish without starting another episode.
+        recovery
+            .maintain(RecoveryReason::UpstreamFailed, observed, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        recovery.probe_upstream(recovery.generation(), &cancel);
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        *recovery.last_probe.lock().unwrap() = None;
+        recovery.probe_upstream(observed, &cancel);
+        assert!(recovery.last_probe.lock().unwrap().is_none());
+        cancel.cancel();
+        recovery.probe_upstream(recovery.generation(), &cancel);
+        assert!(recovery.last_probe.lock().unwrap().is_none());
+        recovery.probe_upstream(recovery.generation(), &CancellationToken::new());
+        tokio::time::timeout(Duration::from_secs(1), finished.notified())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn idle_refresh_tracks_requests_and_maintenance() {

@@ -694,6 +694,22 @@ async fn revoked_session_can_pong_but_rejects_inventory_and_both_token_exchanges
         session.domain_inventory().await.err().unwrap().text().code,
         "inventory.sourcesUnavailable"
     );
+    let diagnostics = std::sync::Mutex::new(Vec::new());
+    assert!(session
+        .domain_inventory_with_diagnostics(&|text| {
+            diagnostics.lock().unwrap().push(text);
+        })
+        .await
+        .is_err());
+    {
+        let events = diagnostics.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].params["stage"], "domain_inventory_desktop");
+        assert_eq!(events[1].params["stage"], "domain_inventory_docker");
+        for event in events.iter() {
+            assert_eq!(event.params["kind"], "nas_rejected");
+        }
+    }
     let error = session.refresh_entry_token().await.unwrap_err();
     assert_eq!(error.text().code, "auth.nasRejected");
     assert_eq!(error.stage(), "entry_refresh");
@@ -759,4 +775,45 @@ async fn fn_connect_metadata_reuses_ticket_or_legacy_auth_without_exposing_crede
         session.rpc.lock().await.heartbeat().await.unwrap();
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn maintenance_deadlines_include_rpc_lock_wait() {
+    let (base, server) = mock_server_with_auth(
+        true,
+        true,
+        MockStream::Forbidden,
+        MockAuth::RegistriesDenied,
+    )
+    .await;
+    let session = NasSession::login(
+        base,
+        "my-nas",
+        "fixture-user",
+        "fixture-password",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let guard = session.rpc.lock().await;
+    let heartbeat = session
+        .heartbeat_with_timeout(Duration::from_millis(5))
+        .await
+        .unwrap_err();
+    assert_eq!(heartbeat.category(), "timeout");
+    let inventory = session
+        .domain_inventory_with_timeout(Duration::from_millis(5))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(inventory.category(), "timeout");
+    assert_eq!(
+        crate::recovery::RecoveryReason::for_inventory_error(&inventory),
+        Some(crate::recovery::RecoveryReason::DomainInventoryFailed)
+    );
+    drop(guard);
+    session.heartbeat().await.unwrap();
+    session.rpc.lock().await.close().await;
+    server.abort();
 }

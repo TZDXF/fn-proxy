@@ -1357,3 +1357,50 @@ async fn concurrent_http_expiry_requests_share_one_credential_exchange() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn upstream_transport_failure_probes_auth_without_replaying_post() {
+    let f = fixture().await;
+    let broken = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    *f.upstream.write().unwrap() =
+        url::Url::parse(&format!("http://{}/", broken.local_addr().unwrap())).unwrap();
+    let hits = Arc::new(AtomicU64::new(0));
+    let accepted = hits.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (socket, _) = broken.accept().await.unwrap();
+            accepted.fetch_add(1, Ordering::SeqCst);
+            drop(socket);
+        }
+    });
+    let session = f.hub.read().await.clone().unwrap();
+    let done = Arc::new(tokio::sync::Notify::new());
+    let notify = done.clone();
+    f.recovery.configure(
+        Arc::new(move |reason| {
+            assert_eq!(reason, RecoveryReason::UpstreamFailed);
+            let session = session.clone();
+            let notify = notify.clone();
+            Box::pin(async move {
+                // A healthy authenticated socket needs no password login.
+                let result = session.refresh_entry_token().await;
+                notify.notify_one();
+                result
+            })
+        }),
+        Arc::new(|_, _| {}),
+    );
+    let response = reqwest::Client::new()
+        .post(f.local.join("echo").unwrap())
+        .body("do-not-replay")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    tokio::time::timeout(std::time::Duration::from_secs(2), done.notified())
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(f.hub.read().await.is_some());
+    server.abort();
+}

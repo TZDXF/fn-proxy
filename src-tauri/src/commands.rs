@@ -316,7 +316,9 @@ async fn refresh_domains(
     if state.profile().services.is_empty() {
         return Ok(());
     }
-    let inventory = session.domain_inventory().await?;
+    let inventory = session
+        .domain_inventory_with_diagnostics(&|text| state.log(app, "warn", text))
+        .await?;
     let _workspace_guard = manager.operation.lock().await;
     let _guard = state.operation.lock().await;
     apply_domain_inventory(app, manager, state, session, &inventory).await
@@ -634,9 +636,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
             }
             let current = state.session.read().await.clone();
             let alive = if let Some(current) = &current {
-                let mut rpc =
-                    tokio::select! { _=cancel.cancelled()=>break, rpc=current.rpc.lock()=>rpc };
-                tokio::select! { _=cancel.cancelled()=>break, result=rpc.heartbeat()=>result }
+                tokio::select! { _=cancel.cancelled()=>break, result=current.heartbeat()=>result }
             } else {
                 Err(error("proxy.sessionUnavailable"))
             };

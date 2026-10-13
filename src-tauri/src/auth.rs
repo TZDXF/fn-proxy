@@ -431,8 +431,38 @@ impl NasSession {
             created_at: tokio::time::Instant::now(),
         }))
     }
+    pub async fn heartbeat(&self) -> Result<()> {
+        self.heartbeat_with_timeout(Duration::from_secs(15)).await
+    }
+    async fn heartbeat_with_timeout(&self, timeout: Duration) -> Result<()> {
+        // Include lock acquisition: another RPC must not stall liveness indefinitely.
+        tokio::time::timeout(timeout, async { self.rpc.lock().await.heartbeat().await }).await?
+    }
     // Domain maintenance only needs the two entry registries, not container enumeration.
     pub async fn domain_inventory(&self) -> Result<crate::types::ServiceInventory> {
+        self.domain_inventory_with_timeout(Duration::from_secs(30))
+            .await
+    }
+    async fn domain_inventory_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<crate::types::ServiceInventory> {
+        tokio::time::timeout(timeout, self.read_domain_inventory(&|_| {})).await?
+    }
+    pub async fn domain_inventory_with_diagnostics(
+        &self,
+        diagnostic: &(dyn Fn(Text) + Sync),
+    ) -> Result<crate::types::ServiceInventory> {
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            self.read_domain_inventory(diagnostic),
+        )
+        .await?
+    }
+    async fn read_domain_inventory(
+        &self,
+        diagnostic: &(dyn Fn(Text) + Sync),
+    ) -> Result<crate::types::ServiceInventory> {
         let mut rpc = self.rpc.lock().await;
         let desktop = rpc
             .call(
@@ -449,6 +479,12 @@ impl NasSession {
                     false,
                 )
             });
+        // Preserve allowlisted source diagnostics before merging hides the cause.
+        let desktop = desktop.map_err(|e| {
+            let e = e.at("domain_inventory_desktop");
+            diagnostic(e.diagnostic(1));
+            e
+        });
         let docker = rpc
             .call("appcgi.sac.entry.v1.dockerList", json!({}), false)
             .await
@@ -460,6 +496,11 @@ impl NasSession {
                     true,
                 )
             });
+        let docker = docker.map_err(|e| {
+            let e = e.at("domain_inventory_docker");
+            diagnostic(e.diagnostic(1));
+            e
+        });
         crate::inventory::merge_inventories(desktop, docker)
     }
     pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {

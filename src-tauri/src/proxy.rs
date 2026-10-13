@@ -559,13 +559,15 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
                 }
                 failure => {
                     if let Some(recovery) = &ctx.recovery {
-                        if let Ok(Err(e)) = failure {
-                            recovery.log(
-                                "warn",
-                                crate::error::AppError::from(e)
-                                    .at("ws_upstream")
-                                    .diagnostic(1),
-                            );
+                        let e = match failure {
+                            Ok(Err(e)) => crate::error::AppError::from(e),
+                            Err(e) => crate::error::AppError::from(e),
+                            _ => unreachable!(),
+                        };
+                        let probe = e.retryable();
+                        recovery.log("warn", e.at("ws_upstream").diagnostic(1));
+                        if probe {
+                            recovery.probe_upstream(observed, &ctx.cancel);
                         }
                     }
                     return fail(
@@ -613,7 +615,11 @@ async fn forward(State(ctx): State<ProxyContext>, mut request: Request) -> Respo
                         Err(e) => crate::error::AppError::from(e),
                         _ => unreachable!(),
                     };
+                    let probe = e.retryable();
                     recovery.log("warn", e.at("http_upstream").diagnostic(1));
+                    if probe {
+                        recovery.probe_upstream(observed, &ctx.cancel);
+                    }
                 }
                 return fail(
                     StatusCode::BAD_GATEWAY,
