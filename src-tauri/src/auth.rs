@@ -384,11 +384,9 @@ impl NasSession {
         let fn_connect = crate::fn_connect::FnConnectClient::new(
             jar.clone(),
             &base,
-            if auth_mode == "legacy" {
-                logged["token"].as_str().filter(|token| !token.is_empty())
-            } else {
-                None
-            },
+            // Account API authentication is independent of the RPC/ticket mode.
+            // Some NAS versions return both and still require token in this body.
+            logged["token"].as_str().filter(|token| !token.is_empty()),
         );
         for field in ["token", "longToken", "secret", "ticket", "accessToken"] {
             if let Some(Value::String(value)) = logged.get_mut(field) {
@@ -502,11 +500,6 @@ impl NasSession {
             e
         });
         crate::inventory::merge_inventories(desktop, docker)
-    }
-    pub async fn inventory(&self) -> Result<crate::types::ServiceInventory> {
-        // Only registered desktop/Docker entries are useful for remote HTTP mappings.
-        // Do not enumerate containers when reading services.
-        self.domain_inventory().await
     }
     pub async fn refresh_entry_token(&self) -> Result<()> {
         let mut rpc = self.rpc.lock().await;

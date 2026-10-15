@@ -38,6 +38,7 @@ export function useWorkspace() {
       profile: config,
       saved,
       connecting: false,
+      sessionRevision: 0,
       password: "",
       otp: "",
       showPassword: false,
@@ -270,6 +271,7 @@ export function useWorkspace() {
       const target = connections.find((c) => c.profile.id === item.id);
       if (target) {
         target.connection = item.connection;
+        if (!item.connection.connected) target.inventory = null;
         target.proxy = item.proxy;
         // Only accept domain cache changes for the same route and fixed NAS port.
         // Do not overwrite unsaved names, enabled flags, ports or connection form edits.
@@ -293,6 +295,7 @@ export function useWorkspace() {
     // Connecting belongs to this row, not the global busy lock. Capture the target
     // before awaiting so navigation and concurrent connections cannot redirect results.
     target.connecting = true;
+    let attempted = false;
     try {
       target.profile.fnId = normalizeFnId(target.profile.fnId);
       target.profile.username = target.profile.username.trim();
@@ -307,7 +310,9 @@ export function useWorkspace() {
         otp: target.otp || null,
         remember: target.profile.remember,
       };
+      target.sessionRevision += 1;
       target.inventory = null;
+      attempted = true;
       const result = await invoke<ConnectionInfo>("connect_nas", { connectionId, input });
       if (disposed || !connections.includes(target)) return;
       target.connection = result;
@@ -317,6 +322,9 @@ export function useWorkspace() {
       await refresh();
       return true;
     } catch (error) {
+      // A failed relogin may already have torn down the old session and listeners.
+      // Do not leave the UI treating the previous successful login as usable.
+      if (attempted) await refresh().catch(() => {});
       if (!disposed && connections.includes(target)) notify(localizeError(error), true);
       return undefined;
     } finally {
@@ -362,6 +370,7 @@ export function useWorkspace() {
   }
   async function disconnect() {
     await run("disconnect", async () => {
+      current.value.sessionRevision += 1;
       await invoke("disconnect_nas", { connectionId: selectedConnectionId.value });
       inventory.value = null;
       await refresh();
@@ -373,13 +382,22 @@ export function useWorkspace() {
     if (busy.value || current.value.connecting) return;
     if (!formMatchesSession.value && !(await connect(connectionId))) return;
     if (selectedConnectionId.value !== connectionId) return;
+    const target = current.value;
+    const revision = target.sessionRevision;
+    const isCurrentRequest = () =>
+      !disposed && connections.includes(target) && target.sessionRevision === revision;
     await run("discover", async () => {
-      inventory.value = null;
-      inventory.value = await invoke<ServiceInventory>("get_service_inventory", {
-        connectionId: selectedConnectionId.value,
-      });
-      await refresh();
-      section.value = "services";
+      target.inventory = null;
+      try {
+        const result = await invoke<ServiceInventory>("get_service_inventory", { connectionId });
+        await refresh();
+        if (!isCurrentRequest() || !target.connection.connected) return;
+        target.inventory = result;
+        if (selectedConnectionId.value === connectionId) section.value = "services";
+      } catch (error) {
+        await refresh().catch(() => {});
+        if (isCurrentRequest()) throw error;
+      }
     });
   }
   async function addDiscovered(service: DiscoveredService) {

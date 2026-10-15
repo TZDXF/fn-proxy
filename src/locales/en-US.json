@@ -42,6 +42,7 @@
     "proxyOff": "Proxy is off",
     "proxyRunning": "Proxy running",
     "proxyStopped": "Proxy stopped",
+    "reconnecting": "Reconnecting",
     "listening": "Listening",
     "pending": "Ready to start",
     "disabled": "Disabled"
@@ -96,7 +97,8 @@
     "loading": "Reading plan information…",
     "disconnected": "Connect to view plan and traffic",
     "unbound": "No linked FN account; plan information unavailable",
-    "unavailable": "Plan information temporarily unavailable"
+    "unavailable": "Plan information temporarily unavailable",
+    "readFailed": "Read failed"
   },
   "actions": {
     "operations": "Actions",
@@ -407,6 +409,7 @@
       "requestRetry": "Retrying a read-only request or WebSocket handshake once after credential recovery. Method={method}, local port={port}, previous status={status}.",
       "requestReplaySkipped": "Credential recovery was triggered, but requests with side effects or bodies are not replayed. Method={method}, local port={port}, status={status}.",
       "requestPolicyRejected": "Request policy rejected: reason={reason}, local port={port}; raw Host/Origin values are not logged and sign-in is not triggered.",
+      "sessionInvalidated": "The NAS sign-in session expired. Keeping local proxy listeners while signing in again automatically.",
       "reconnecting": "The NAS authentication connection was interrupted. Bounded recovery depends on the error category.",
       "reconnected": "The authentication connection recovered; existing local listeners now use the new credentials.",
       "reconnectFailed": "Automatic recovery failed. Check the diagnostic reason and test the connection manually.",
@@ -454,6 +457,18 @@
       "signatureChanged": "The FN ID resolution signature format changed. Update the app.",
       "resolveFailed": "FN ID resolution failed. Check the FN ID and whether the NAS is online.",
       "relayMissing": "No FN Connect relay address was found for this NAS. This app never falls back to LAN IPs."
+    },
+    "fnConnect": {
+      "authRejected": "The plan API rejected the current login credentials (code {code}); this does not mean the proxy session has expired",
+      "permissionDenied": "This NAS account cannot read plan information (code {code})",
+      "accountRejected": "The NAS plan API returned an error (code {code})",
+      "httpRejected": "The plan API returned HTTP {status}; the proxy connection is unaffected",
+      "entitlementMissing": "The NAS did not return a recognized account binding status or plan",
+      "invalidResponse": "The plan API returned an incompatible response or non-JSON content",
+      "responseTooLarge": "The plan API response exceeded the safe size limit",
+      "clientUnavailable": "The plan information client could not be initialized",
+      "timeout": "Reading plan information timed out; it will retry in the background",
+      "network": "Cannot reach the NAS plan API; it will retry in the background"
     }
   },
   "notifications": {

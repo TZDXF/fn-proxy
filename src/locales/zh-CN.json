@@ -42,6 +42,7 @@
     "proxyOff": "代理未开启",
     "proxyRunning": "代理运行中",
     "proxyStopped": "代理已停止",
+    "reconnecting": "重连中",
     "listening": "监听中",
     "pending": "待启动",
     "disabled": "未启用"
@@ -96,7 +97,8 @@
     "loading": "正在读取套餐信息…",
     "disconnected": "连接后显示套餐与流量",
     "unbound": "未绑定飞牛账号，暂无套餐信息",
-    "unavailable": "套餐信息暂不可用"
+    "unavailable": "套餐信息暂不可用",
+    "readFailed": "读取失败"
   },
   "actions": {
     "operations": "操作",
@@ -407,6 +409,7 @@
       "requestRetry": "凭据恢复后重试一次只读请求或 WebSocket 握手；方法={method}，本地端口={port}，原状态={status}。",
       "requestReplaySkipped": "已触发凭据恢复，但不会自动重放可能有副作用或带正文的请求；方法={method}，本地端口={port}，状态={status}。",
       "requestPolicyRejected": "请求安全校验拒绝：原因={reason}，本地端口={port}；不记录 Host/Origin 原始值，不触发登录。",
+      "sessionInvalidated": "NAS 登录状态已失效；保留本地代理监听，正在自动重新登录",
       "reconnecting": "NAS 认证连接中断，将按错误类型尝试有界自动恢复。",
       "reconnected": "认证连接已恢复，现有本地监听继续使用新凭据",
       "reconnectFailed": "自动恢复失败；请查看诊断原因并手动测试连接。",
@@ -454,6 +457,18 @@
       "signatureChanged": "FN ID 解析签名格式已变化，请更新应用",
       "resolveFailed": "FN ID 解析失败，请检查 FN ID 和 NAS 在线状态",
       "relayMissing": "未找到当前 NAS 的 FN Connect 中继地址；本应用不会自动跳转到内网 IP"
+    },
+    "fnConnect": {
+      "authRejected": "套餐接口未接受当前登录凭据（错误码 {code}）；不代表代理会话已失效",
+      "permissionDenied": "当前 NAS 账号无权读取套餐信息（错误码 {code}）",
+      "accountRejected": "NAS 套餐接口返回错误（错误码 {code}）",
+      "httpRejected": "套餐接口返回 HTTP {status}；代理连接不受影响",
+      "entitlementMissing": "NAS 未返回可识别的账号绑定状态或套餐信息",
+      "invalidResponse": "套餐接口返回格式不兼容或非 JSON 内容",
+      "responseTooLarge": "套餐接口响应超过安全大小限制",
+      "clientUnavailable": "套餐信息读取客户端初始化失败",
+      "timeout": "套餐信息读取超时，将在后台重试",
+      "network": "无法连接 NAS 套餐接口，将在后台重试"
     }
   },
   "notifications": {

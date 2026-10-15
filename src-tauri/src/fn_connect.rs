@@ -1,5 +1,6 @@
 //! Read-only FN Connect entitlement metadata from the NAS account API.
 //! Never serialize the cloud account, NAS token, response body or request diagnostics.
+use crate::text::Text;
 use reqwest::{cookie::Jar, Client};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -20,12 +21,15 @@ pub struct FnConnectEntitlement {
 pub struct FnConnectInfo {
     pub status: String,
     pub entitlement: Option<FnConnectEntitlement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Text>,
 }
 impl FnConnectInfo {
-    fn unavailable() -> Self {
+    fn unavailable(reason: Text) -> Self {
         Self {
             status: "unavailable".into(),
             entitlement: None,
+            reason: Some(reason),
         }
     }
 }
@@ -33,19 +37,29 @@ fn number(value: &Value) -> Option<f64> {
     value.as_f64().filter(|n| n.is_finite() && *n >= 0.0)
 }
 pub fn parse_account_check(value: &Value) -> FnConnectInfo {
-    if value["code"].as_i64() != Some(0) {
-        return FnConnectInfo::unavailable();
+    match value["code"].as_i64() {
+        Some(0) => {}
+        Some(code) => {
+            let reason = match code {
+                401 | 13003 => "fnConnect.authRejected",
+                13002 => "fnConnect.permissionDenied",
+                _ => "fnConnect.accountRejected",
+            };
+            return FnConnectInfo::unavailable(Text::with(reason, [("code", code.to_string())]));
+        }
+        None => return FnConnectInfo::unavailable(Text::new("fnConnect.invalidResponse")),
     }
     let data = &value["data"];
     if data["status"].as_u64() == Some(2) {
         return FnConnectInfo {
             status: "unbound".into(),
             entitlement: None,
+            reason: None,
         };
     }
     let entitlement = &data["connectEntitlement"];
     if data["status"].as_u64() != Some(1) || !entitlement.is_object() {
-        return FnConnectInfo::unavailable();
+        return FnConnectInfo::unavailable(Text::new("fnConnect.entitlementMissing"));
     }
     let tier = match entitlement["type"].as_str() {
         Some("base") => "base",
@@ -55,6 +69,7 @@ pub fn parse_account_check(value: &Value) -> FnConnectInfo {
     };
     FnConnectInfo {
         status: "available".into(),
+        reason: None,
         entitlement: Some(FnConnectEntitlement {
             tier: tier.into(),
             bandwidth_mbps: number(&entitlement["bandwidth"]),
@@ -93,10 +108,10 @@ impl FnConnectClient {
         }
     }
     pub async fn read(&self) -> FnConnectInfo {
-        // Ticket-cookie NAS versions omit token, just like the NAS frontend. Legacy
-        // versions send their NAS login token, never the unrelated service entry-token.
+        // Use a NAS login token whenever one was issued, including alongside a
+        // ticket. Cookie-only NAS versions omit it. Never send service entry-token.
         let Some(http) = &self.http else {
-            return FnConnectInfo::unavailable();
+            return FnConnectInfo::unavailable(Text::new("fnConnect.clientUnavailable"));
         };
         let body = self
             .token
@@ -108,26 +123,40 @@ impl FnConnectClient {
                 .json(&body)
                 .send()
                 .await
-                .ok()?;
+                .map_err(transport_reason)?;
             if !response.status().is_success() {
-                return None;
+                return Err(Text::with(
+                    "fnConnect.httpRejected",
+                    [("status", response.status().as_u16().to_string())],
+                ));
             }
             let mut bytes = Zeroizing::new(Vec::new());
-            while let Some(chunk) = response.chunk().await.ok()? {
+            while let Some(chunk) = response.chunk().await.map_err(transport_reason)? {
                 if bytes.len() + chunk.len() > 64 * 1024 {
-                    return None;
+                    return Err(Text::new("fnConnect.responseTooLarge"));
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            let value: Value = serde_json::from_slice(&bytes).ok()?;
-            Some(parse_account_check(&value))
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| Text::new("fnConnect.invalidResponse"))?;
+            Ok(parse_account_check(&value))
         })
         .await;
-        result
-            .ok()
-            .flatten()
-            .unwrap_or_else(FnConnectInfo::unavailable)
+        match result {
+            Ok(Ok(info)) => info,
+            Ok(Err(reason)) => FnConnectInfo::unavailable(reason),
+            Err(_) => FnConnectInfo::unavailable(Text::new("fnConnect.timeout")),
+        }
     }
+}
+
+// Allowlisted diagnostics only: reqwest errors may contain URLs or credentials.
+fn transport_reason(error: reqwest::Error) -> Text {
+    Text::new(if error.is_timeout() {
+        "fnConnect.timeout"
+    } else {
+        "fnConnect.network"
+    })
 }
 
 #[cfg(test)]
@@ -174,6 +203,36 @@ mod tests {
         );
     }
     #[test]
+    fn failures_preserve_only_allowlisted_reasons_and_numeric_codes() {
+        for (code, expected) in [
+            (13003, "fnConnect.authRejected"),
+            (401, "fnConnect.authRejected"),
+            (13002, "fnConnect.permissionDenied"),
+            (13005, "fnConnect.accountRejected"),
+        ] {
+            let info = parse_account_check(&json!({
+                "code":code,
+                "msg":"fixture-private-response-token",
+                "data":{"account":"fixture-private-account"}
+            }));
+            assert_eq!(info.status, "unavailable");
+            let reason = info.reason.as_ref().unwrap();
+            assert_eq!(reason.code, expected);
+            assert_eq!(reason.params["code"], code.to_string());
+            let wire = serde_json::to_string(&info).unwrap();
+            assert!(!wire.contains("fixture-private"));
+            assert!(!wire.contains("msg"));
+        }
+        let info = parse_account_check(&json!({"code":"fixture-private-code"}));
+        assert_eq!(info.reason.unwrap().code, "fnConnect.invalidResponse");
+        let info = parse_account_check(&json!({"code":0,"data":{"status":1}}));
+        assert_eq!(info.reason.unwrap().code, "fnConnect.entitlementMissing");
+        assert!(parse_account_check(&account("base")).reason.is_none());
+        assert!(parse_account_check(&json!({"code":0,"data":{"status":2}}))
+            .reason
+            .is_none());
+    }
+    #[test]
     fn invalid_numbers_remain_unknown_and_zero_quota_means_unlimited() {
         let mut value = account("base");
         value["data"]["connectEntitlement"] = json!({"type":"base","bandwidth":-1,"trafficUsed":"1024","trafficPerMonth":0,"endTime":0});
@@ -201,6 +260,7 @@ mod tests {
             (200, "x".repeat(65 * 1024)),
             (307, String::new()),
         ] {
+            let oversized = body.len() > 64 * 1024;
             let leaked = Arc::new(AtomicUsize::new(0));
             let observed = leaked.clone();
             let app = Router::new()
@@ -236,7 +296,25 @@ mod tests {
             });
             let client =
                 FnConnectClient::new(Arc::new(Jar::default()), &base, Some("fixture-nas-token"));
-            assert_eq!(client.read().await.status, "unavailable");
+            let info = client.read().await;
+            assert_eq!(info.status, "unavailable");
+            let reason = info.reason.as_ref().unwrap();
+            if status != 200 {
+                assert_eq!(reason.code, "fnConnect.httpRejected");
+                assert_eq!(reason.params["status"], status.to_string());
+            } else {
+                assert_eq!(
+                    reason.code,
+                    if oversized {
+                        "fnConnect.responseTooLarge"
+                    } else {
+                        "fnConnect.invalidResponse"
+                    }
+                );
+            }
+            let wire = serde_json::to_string(&info).unwrap();
+            assert!(!wire.contains("fixture-nas-token"));
+            assert!(!wire.contains("http://"));
             assert_eq!(leaked.load(Ordering::SeqCst), 0);
             server.abort();
         }

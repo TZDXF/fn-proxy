@@ -30,6 +30,7 @@ enum MockStream {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MockAuth {
     Normal,
+    TicketOnly,
     RejectOldEntry,
     TwoFactor,
     RotateEntry,
@@ -77,14 +78,20 @@ async fn ticket(Json(body): Json<Value>) -> impl IntoResponse {
         Json(json!({"csrfToken":"fixture-csrf"})),
     )
 }
-async fn account_check(headers: HeaderMap, Json(body): Json<Value>) -> impl IntoResponse {
+async fn account_check(
+    State(state): State<MockNas>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
     let cookies = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    if cookies.contains("nas-session=fixture") {
+    if state.auth_mode == MockAuth::TicketOnly {
+        assert!(cookies.contains("nas-session=fixture"));
         assert_eq!(body, json!({}));
     } else {
+        // Even ticket-cookie sessions may need a token for this legacy account API.
         assert_eq!(body["token"], "fixture-legacy-token");
     }
     assert!(!cookies.contains("entry-token="));
@@ -190,7 +197,7 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
                         cbc::Encryptor::<aes::Aes256>::new_from_slices(&envelope_key, &envelope_iv)
                             .unwrap()
                             .encrypt_padded_vec_mut::<Pkcs7>(MOCK_SECRET);
-                    json!({"reqid":id,"result":"suc","ticket":if state.ticket_mode {"fixture-ticket"}else{""},"token":"fixture-legacy-token","secret":B64.encode(encrypted),"isTwofaEnforced":false,"isBindTwofaSecret":state.auth_mode == MockAuth::TwoFactor})
+                    json!({"reqid":id,"result":"suc","ticket":if state.ticket_mode {"fixture-ticket"}else{""},"token":if state.auth_mode == MockAuth::TicketOnly {""} else {"fixture-legacy-token"},"secret":B64.encode(encrypted),"isTwofaEnforced":false,"isBindTwofaSecret":state.auth_mode == MockAuth::TwoFactor})
                 }
             }
             "appcgi.sac.entry.v1.exchangeEntryToken" => {
@@ -260,6 +267,16 @@ async fn serve_mock(mut socket: WebSocket, state: MockNas) {
 pub(crate) async fn mock_server(ticket_mode: bool) -> (url::Url, tokio::task::JoinHandle<()>) {
     mock_server_with_docker(ticket_mode, true).await
 }
+pub(crate) async fn mock_server_with_unavailable_registries(
+) -> (url::Url, tokio::task::JoinHandle<()>) {
+    mock_server_with_auth(
+        true,
+        true,
+        MockStream::Forbidden,
+        MockAuth::RegistriesDenied,
+    )
+    .await
+}
 async fn mock_server_with_docker(
     ticket_mode: bool,
     docker_allowed: bool,
@@ -317,7 +334,7 @@ async fn full_ticket_login_encrypted_rpc_discovery_and_refresh() {
     assert_eq!(&**session.entry_token.read().await, "fixture-entry-token");
     // RPC uses the local fixture; discovery metadata models a validated production relay.
     Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
-    let inventory = session.inventory().await.unwrap();
+    let inventory = session.domain_inventory().await.unwrap();
     assert_eq!(inventory.total_entries, 6);
     assert_eq!(inventory.mapped_entries, 3);
     assert_eq!(inventory.unmapped_entries, 3);
@@ -353,7 +370,7 @@ async fn docker_permission_failure_retains_desktop_inventory_and_rpc_session() {
     .unwrap();
     // RPC uses the local fixture; discovery metadata models a validated production relay.
     Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
-    let report = session.inventory().await.unwrap();
+    let report = session.domain_inventory().await.unwrap();
     assert_eq!(report.total_entries, 3);
     assert_eq!(report.services.len(), 1);
     assert_eq!(report.sources[0].status, "ok");
@@ -595,7 +612,7 @@ async fn service_inventory_does_not_request_container_list() {
     .unwrap();
     // RPC uses the local fixture; discovery metadata models a validated production relay.
     Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
-    let report = session.inventory().await.unwrap();
+    let report = session.domain_inventory().await.unwrap();
     assert_eq!(report.services.len(), 2);
     assert_eq!(report.total_entries, 6);
     assert!(report.docker.is_none());
@@ -748,8 +765,13 @@ async fn unavailable_registries_do_not_imply_revoked_session() {
 
 #[tokio::test]
 async fn fn_connect_metadata_reuses_ticket_or_legacy_auth_without_exposing_credentials() {
-    for ticket_mode in [true, false] {
-        let (base, server) = mock_server(ticket_mode).await;
+    for (ticket_mode, auth_mode) in [
+        (true, MockAuth::Normal),
+        (true, MockAuth::TicketOnly),
+        (false, MockAuth::Normal),
+    ] {
+        let (base, server) =
+            mock_server_with_auth(ticket_mode, true, MockStream::Forbidden, auth_mode).await;
         let session = NasSession::login(
             base,
             "my-nas",

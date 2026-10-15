@@ -88,6 +88,26 @@ describe("FN Connect inline rendering", () => {
     for (const text of ["Pro", "Bandwidth", "Monthly high-speed traffic", "Until"])
       expect(html).toContain(text);
   });
+  it("shows a localized failure reason without hiding the active login", async () => {
+    const failed: ConnectionInfo = {
+      ...connected,
+      fnConnect: {
+        status: "unavailable",
+        entitlement: null,
+        reason: { code: "fnConnect.authRejected", params: { code: "13003" } },
+      },
+    };
+    const zh = await renderCard(failed);
+    expect(zh).toContain("读取失败");
+    expect(zh).toContain("套餐接口未接受当前登录凭据");
+    expect(zh).toContain("13003");
+    expect(zh).not.toContain("连接后显示套餐与流量");
+    expect(zh).not.toContain("fixture-user");
+    const en = await renderCard(failed, "en-US");
+    expect(en).toContain("Read failed");
+    expect(en).toContain("The plan API rejected the current login credentials");
+    expect(en).not.toContain("未接受");
+  });
   it("does not mislabel unknown tiers, missing info or disconnected cached data", async () => {
     const unknown = await renderCard({
       ...connected,

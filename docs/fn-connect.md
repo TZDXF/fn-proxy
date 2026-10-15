@@ -8,7 +8,7 @@
 
 公开前端证据：
 
-- `assets/account-DPpexzkN.js`：定义等级 `base`、`premium`、`pro`；调用 `POST /v1/accountapi/check`。旧版 body 包含 NAS 的 `fnos-token`，ticket-cookie 模式不提供 token 时，JSON body 是 `{}`。
+- `assets/account-DPpexzkN.js`：定义等级 `base`、`premium`、`pro`；调用 `POST /v1/accountapi/check`。body 使用 NAS 登录 Token（公开前端从 `fnos-token` 读取）；没有 Token 时，JSON body 是 `{}`。是否需要 Token 不能仅由 WebSocket/Ticket 登录方式判断。
 - `assets/account-hooks-DoiPUQnK.js`：账号绑定状态 `1` 为已绑定，`2` 为未绑定。
 - `assets/Setting-Jfw9mYiT.js`：从 `connectEntitlement` 读取带宽、流量和有效期；流量按 MB 计，除以 1024 展示 GB；`endTime` 乘 1000 转换为日期。`trafficPerMonth = 0` 表示不限流量。
 - 主站匿名访问该只读接口返回业务码 `13003`（登录状态失效）。未通过读取凭据或新增主站映射获取真实账号套餐；真实登录后的响应仍需运行新版应用验证。
@@ -48,7 +48,7 @@
 ## 生命周期与安全
 
 - 正常认证成功后创建仅 Rust 可见的账号接口客户端；共享 NAS Cookie Jar。
-- ticket-cookie 请求 `{}`；旧版请求中使用 NAS 登录 token，而非服务 `entry-token`。旧版 token 只在 Rust 内存中以 `Zeroizing` 保存，不进入快照、配置或日志。
+- 登录响应只要签发了非空 NAS Token，套餐请求就携带它，包括同时签发 Ticket 的情况；仅在没有 NAS Token 时复用 Cookie 并请求 `{}`。不能用服务 `entry-token` 替代。NAS Token 只在 Rust 内存中以 `Zeroizing` 保存，不进入快照、配置或日志。
 - 独立后台任务首次立即读取，随后约每 60 秒读取一次；重连后无缓存时在下次调度读取。与心跳、服务发现和代理恢复独立。
 - 接口请求上限 6 秒、响应上限 64 KiB；禁止跟随重定向，包括同主机重定向，避免凭据转发或 HTTP 降级。
 - 从响应中只提取等级、带宽、流量及到期时间；不发送云账号标识或原始响应到前端。
@@ -61,3 +61,14 @@
 首页连接总览与连接列表在原有行内展示等级、带宽与流量，不增加独立信息卡或表格行。有效期与完整字段说明通过悬停提示和无障碍标签提供。等级采用本地 SVG 图标与主题样式，不引入第三方远程图片请求或放宽应用 CSP。
 
 测试覆盖三种等级、未知等级、字段缺失、非法数值、MB/GB 转换、不限流量、额度用尽、日期与双语展示、断开连接隐藏缓存、两种认证方式、读取失败/非法 JSON/超大响应/禁止重定向及旧会话结果隔离。浅色/深色浏览器样式使用合成数据验证，不能替代真实桌面登录后的套餐验证。
+
+## 2026-10-15 登录后仍显示占位的排查
+
+重新匿名读取 NAS 公开登录页、`index-B0cXg_s1.js` 与 `account-DPpexzkN.js`，确认该构建的网页登录模式为 legacy，套餐检查仍提交 `JSON.stringify({token: getNasToken()})`。未读取浏览器、本机进程或凭据管理器中的凭据，未进行额外密码登录，也未取得真实账号套餐响应。
+
+代码中存在两项独立问题：
+
+1. `NasSession::login` 优先选择 Ticket 认证后，创建套餐客户端时只在 `auth_mode == legacy` 才保留登录响应中的 Token；同一响应同时包含 Ticket 和 Token 时，Token 被错误丢弃。WebSocket/代理可正常工作，不代表这个账号 HTTP 接口接受 Cookie-only 认证。现已按 Token 是否实际签发决定请求内容，并用同时签发、Ticket-only、Legacy 三类本地模拟覆盖。
+2. HTTP 拒绝、业务错误、非 JSON、字段缺失和超时均被静默归为 unavailable。现在只向界面和日志传递白名单原因及数值错误码，悬停可查看详情；相同连续错误不重复写日志。原始响应、账号标识、Token 和请求 URL 均不传出。业务码 `401`/`13003` 仅说明套餐接口未接受认证，不触发全连接重登录。
+
+修复解决了已确认的凭据选择缺陷并补上诊断，但仍需用户使用更新后的桌面程序重新连接，才能确认其真实 NAS 是否还有权限或版本兼容问题。

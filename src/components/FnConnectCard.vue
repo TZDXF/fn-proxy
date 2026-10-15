@@ -40,9 +40,12 @@ const details = computed(() => {
 const message = computed(() => {
   if (!props.connection.connected) return t("fnConnect.disconnected");
   if (!props.connection.fnConnect) return t("fnConnect.loading");
-  return t(
-    props.connection.fnConnect.status === "unbound" ? "fnConnect.unbound" : "fnConnect.unavailable",
-  );
+  const info = props.connection.fnConnect;
+  if (info.status === "unbound") return t("fnConnect.unbound");
+  const reason = info.reason;
+  return reason
+    ? `${t("fnConnect.unavailable")} · ${t(`backend.${reason.code}`, reason.params ?? {})}`
+    : t("fnConnect.unavailable");
 });
 </script>
 
@@ -64,6 +67,13 @@ const message = computed(() => {
         <Icon name="transfer" :size="13" />{{ traffic }}
       </span>
     </template>
-    <span v-else class="fn-connect-placeholder"><Icon name="globe" :size="13" />—</span>
+    <span v-else class="fn-connect-placeholder">
+      <Icon name="globe" :size="13" />
+      {{
+        connection.connected && connection.fnConnect?.status === "unavailable"
+          ? t("fnConnect.readFailed")
+          : "—"
+      }}
+    </span>
   </span>
 </template>

@@ -1268,3 +1268,105 @@ describe("lightweight mode settings", () => {
     expect(w.busy.value).toBe("");
   });
 });
+
+describe("discovery during failed relogin", () => {
+  const report = {
+    docker: null,
+    sources: [],
+    totalEntries: 1,
+    mappedEntries: 1,
+    unmappedEntries: 0,
+    services: [service()],
+    entries: [],
+    scope: { code: "fixture" },
+  };
+  const loginError = { code: "auth.nasRejected", params: { code: "1000" } };
+
+  it("refreshes disconnected state immediately after a failed manual relogin", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.password.value = "fixture-password";
+    w.connection.value = info("my-nas");
+    w.inventory.value = report;
+    w.proxy.value = { running: true, listeners: [], requests: 8 };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "connect_nas") throw loginError;
+      if (command === "get_snapshot")
+        return {
+          connections: [
+            {
+              id: w.selectedConnectionId.value,
+              connection: { ...info("my-nas"), connected: false, message: loginError },
+              proxy: { running: false, listeners: [], requests: 8 },
+              services: [],
+            },
+          ],
+        };
+    });
+    expect(await w.connect()).toBeUndefined();
+    expect(w.connection.value.connected).toBe(false);
+    expect(w.proxy.value.running).toBe(false);
+    expect(w.inventory.value).toBeNull();
+    expect(w.notice.value?.message).toContain("1000");
+  });
+
+  it("refreshes failed automatic recovery state before reporting its actual error", async () => {
+    mocks.desktop = true;
+    const w = useWorkspace();
+    w.profile.value.fnId = "my-nas";
+    w.profile.value.username = "admin";
+    w.connection.value = info("my-nas");
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_service_inventory") throw loginError;
+      if (command === "get_snapshot")
+        return {
+          connections: [
+            {
+              id: w.selectedConnectionId.value,
+              connection: { ...info("my-nas"), connected: false, message: loginError },
+              proxy: { running: false, listeners: [], requests: 0 },
+              services: [],
+            },
+          ],
+        };
+    });
+    await w.discover();
+    expect(w.connection.value.connected).toBe(false);
+    expect(w.inventory.value).toBeNull();
+    expect(w.notice.value?.message).toContain("1000");
+    expect(w.notice.value?.message).not.toContain("Docker");
+  });
+
+  it.each([false, true])(
+    "discards old discovery responses after relogin fails (reject=%s)",
+    async (reject) => {
+      mocks.desktop = true;
+      const w = useWorkspace();
+      w.profile.value.fnId = "my-nas";
+      w.profile.value.username = "admin";
+      w.password.value = "fixture-password";
+      w.connection.value = info("my-nas");
+      let complete!: () => void;
+      mocks.invoke.mockImplementation(async (command: string) => {
+        if (command === "get_service_inventory")
+          return new Promise((resolve, fail) => {
+            complete = () =>
+              reject ? fail({ code: "inventory.sourcesUnavailable" }) : resolve(report);
+          });
+        if (command === "connect_nas") throw loginError;
+        if (command === "get_snapshot") return { connections: [] };
+      });
+      const pending = w.discover();
+      await w.connect();
+      expect(w.notice.value?.message).toContain("1000");
+      complete();
+      await pending;
+      expect(w.inventory.value).toBeNull();
+      expect(w.notice.value?.message).toContain("1000");
+      expect(w.notice.value?.message).not.toContain("Docker");
+      expect(w.busy.value).toBe("");
+    },
+  );
+});

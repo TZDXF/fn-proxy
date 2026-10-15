@@ -27,6 +27,7 @@ export interface FnConnectEntitlement {
 export interface FnConnectInfo {
   status: "available" | "unbound" | "unavailable";
   entitlement: FnConnectEntitlement | null;
+  reason?: BackendText | null;
 }
 export interface ConnectionInfo {
   connected: boolean;
