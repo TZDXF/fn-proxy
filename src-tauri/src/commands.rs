@@ -490,6 +490,7 @@ async fn recover_connection(
         *state.session.write().await = None;
         state.info.write().unwrap().connected = false;
         state.info.write().unwrap().message = Text::new("logs.reconnecting");
+        state.log(app, "warn", Text::new("logs.sessionInvalidated"));
         let credentials = state.credentials.lock().await.clone();
         match credentials {
             Some(credentials) => credentials,
@@ -558,6 +559,7 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
     // account API cannot delay the core proxy maintenance/recovery path.
     let metadata_state = Arc::downgrade(&state);
     let metadata_cancel = cancel.clone();
+    let metadata_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut refreshed = tokio::time::Instant::now();
         let mut tick = tokio::time::interval(Duration::from_secs(15));
@@ -574,7 +576,26 @@ async fn spawn_monitor(app: AppHandle, state: Arc<ConnectionState>, current: Arc
             }
             let current = state.session.read().await.clone();
             if let Some(current) = current {
+                let previous_reason = state
+                    .info
+                    .read()
+                    .unwrap()
+                    .fn_connect
+                    .as_ref()
+                    .and_then(|info| info.reason.clone());
                 tokio::select! { _=metadata_cancel.cancelled()=>return, _=refresh_fn_connect(&state, &current)=>{} }
+                let reason = state
+                    .info
+                    .read()
+                    .unwrap()
+                    .fn_connect
+                    .as_ref()
+                    .and_then(|info| info.reason.clone());
+                if reason != previous_reason {
+                    if let Some(reason) = reason {
+                        state.log(&metadata_app, "warn", reason);
+                    }
+                }
                 refreshed = tokio::time::Instant::now();
             }
         }
@@ -956,6 +977,55 @@ pub async fn forget_login(
     state.log(&app, "info", Text::new("logs.passwordForgotten"));
     Ok(())
 }
+// Discovery shares the monitor/proxy recovery gate. Never surface a stale registry
+// error after that session has already been replaced or its login recovery failed.
+async fn read_connection_inventory(
+    state: &ConnectionState,
+    diagnostic: &(dyn Fn(Text) + Sync),
+) -> Result<(Arc<NasSession>, ServiceInventory)> {
+    for attempt in 0..2 {
+        let observed = state.recovery.generation();
+        let session = state
+            .session
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| error("workspace.loginRequired"))?;
+        let result = session.domain_inventory_with_diagnostics(diagnostic).await;
+        let current = state.session.read().await.clone();
+        let same_session = current.as_ref().is_some_and(|s| Arc::ptr_eq(s, &session));
+        match result {
+            Ok(inventory) if same_session => return Ok((session, inventory)),
+            Err(e) if same_session => {
+                if attempt != 0 {
+                    return Err(e);
+                }
+                let Some(reason) = RecoveryReason::for_inventory_error(&e) else {
+                    return Err(e);
+                };
+                state
+                    .recovery
+                    .maintain(reason, observed, &CancellationToken::new())
+                    .await?;
+            }
+            _ if current.is_none() => {
+                // Join an in-flight repair or return its latched failure, rather than
+                // replacing the real login error with sourcesUnavailable.
+                state
+                    .recovery
+                    .maintain(
+                        RecoveryReason::DomainInventoryFailed,
+                        observed,
+                        &CancellationToken::new(),
+                    )
+                    .await?;
+            }
+            _ => {} // A replacement session must supply its own inventory.
+        }
+    }
+    Err(error("workspace.loginRequired"))
+}
+
 #[tauri::command]
 pub async fn discover_services(
     app: AppHandle,
@@ -965,15 +1035,19 @@ pub async fn discover_services(
     let manager = state.inner().clone();
     let state = manager.connection(&connection_id)?;
 
-    let session = state
+    let (session, inventory) =
+        read_connection_inventory(&state, &|text| state.log(&app, "warn", text)).await?;
+    let _workspace_guard = manager.operation.lock().await;
+    let _guard = state.operation.lock().await;
+    if !state
         .session
         .read()
         .await
-        .clone()
-        .ok_or_else(|| error("workspace.loginRequired"))?;
-    let inventory = session.inventory().await?;
-    let _workspace_guard = manager.operation.lock().await;
-    let _guard = state.operation.lock().await;
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &session))
+    {
+        return Err(error("workspace.loginRequired"));
+    }
     apply_domain_inventory(&app, &manager, &state, &session, &inventory).await?;
     Ok(inventory.services)
 }
@@ -986,18 +1060,36 @@ pub async fn get_service_inventory(
     let manager = state.inner().clone();
     let state = manager.connection(&connection_id)?;
 
-    let session = state
+    let (session, inventory) =
+        read_connection_inventory(&state, &|text| state.log(&app, "warn", text)).await?;
+    let _workspace_guard = manager.operation.lock().await;
+    let _guard = state.operation.lock().await;
+    if !state
         .session
         .read()
         .await
-        .clone()
-        .ok_or_else(|| error("workspace.loginRequired"))?;
-    let inventory = session.inventory().await?;
-    let _workspace_guard = manager.operation.lock().await;
-    let _guard = state.operation.lock().await;
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &session))
+    {
+        return Err(error("workspace.loginRequired"));
+    }
     apply_domain_inventory(&app, &manager, &state, &session, &inventory).await?;
     Ok(inventory)
 }
+#[tauri::command]
+pub async fn get_service_icon(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    upstream: String,
+) -> Result<Option<String>> {
+    let connection = state.connection(&connection_id)?;
+    let Some(session) = connection.session.read().await.clone() else {
+        return Ok(None);
+    };
+    let token = Zeroizing::new(session.entry_token.read().await.to_string());
+    Ok(crate::favicon::fetch(&upstream, &session.info.fn_id, &token).await)
+}
+
 #[tauri::command]
 pub async fn probe_service(
     state: State<'_, Arc<AppState>>,
@@ -1752,6 +1844,138 @@ mod tests {
                 .status,
             "available"
         );
+        server.abort();
+    }
+    async fn discovery_session(
+        unavailable: bool,
+    ) -> (Arc<NasSession>, tokio::task::JoinHandle<()>) {
+        let (base, server) = if unavailable {
+            crate::auth::integration_tests::mock_server_with_unavailable_registries().await
+        } else {
+            crate::auth::integration_tests::mock_server(true).await
+        };
+        let mut session = NasSession::login(
+            base,
+            "my-nas",
+            "fixture-user",
+            "fixture-password",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        Arc::get_mut(&mut session).unwrap().info.relay = "https://my-nas.5ddd.com".into();
+        (session, server)
+    }
+    #[tokio::test]
+    async fn discovery_returns_actual_relogin_failure_instead_of_registry_error() {
+        use std::sync::atomic::AtomicUsize;
+        let state = Arc::new(ConnectionState::new(
+            Profile::default(),
+            false,
+            Arc::new(RuntimeLogs::default()),
+        ));
+        let (session, server) = discovery_session(true).await;
+        *state.session.write().await = Some(session);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        let weak = Arc::downgrade(&state);
+        state.recovery.configure(
+            Arc::new(move |_| {
+                let state = weak.upgrade().unwrap();
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    let failure =
+                        error_with("auth.nasRejected", [("code", "1000".into())]).at("user_login");
+                    cleanup_failed_connection(&state, failure.text()).await;
+                    Err(failure)
+                })
+            }),
+            Arc::new(|_, _| {}),
+        );
+        let (first, second) = tokio::join!(
+            read_connection_inventory(&state, &|_| {}),
+            read_connection_inventory(&state, &|_| {}),
+        );
+        for result in [first, second] {
+            let failure = result.err().unwrap();
+            assert_eq!(failure.text().code, "auth.nasRejected");
+            assert_eq!(failure.text().params["code"], "1000");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(state.session.read().await.is_none());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn discovery_retries_using_the_recovered_session() {
+        let state = Arc::new(ConnectionState::new(
+            Profile::default(),
+            false,
+            Arc::new(RuntimeLogs::default()),
+        ));
+        let (old, old_server) = discovery_session(true).await;
+        let (replacement, server) = discovery_session(false).await;
+        *state.session.write().await = Some(old);
+        let weak = Arc::downgrade(&state);
+        let next = replacement.clone();
+        state.recovery.configure(
+            Arc::new(move |_| {
+                let state = weak.upgrade().unwrap();
+                let next = next.clone();
+                Box::pin(async move {
+                    *state.session.write().await = Some(next);
+                    Ok(())
+                })
+            }),
+            Arc::new(|_, _| {}),
+        );
+        let (current, inventory) = read_connection_inventory(&state, &|_| {}).await.unwrap();
+        assert!(Arc::ptr_eq(&current, &replacement));
+        assert_eq!(inventory.sources.len(), 2);
+        assert_eq!(inventory.services.len(), 2);
+        old_server.abort();
+        server.abort();
+    }
+    #[tokio::test]
+    async fn discovery_keeps_registry_errors_when_the_authentication_probe_succeeds() {
+        let state =
+            ConnectionState::new(Profile::default(), false, Arc::new(RuntimeLogs::default()));
+        let (session, server) = discovery_session(true).await;
+        *state.session.write().await = Some(session.clone());
+        let probe = session.clone();
+        state.recovery.configure(
+            Arc::new(move |_| {
+                let probe = probe.clone();
+                Box::pin(async move { probe.refresh_entry_token().await })
+            }),
+            Arc::new(|_, _| {}),
+        );
+        let failure = read_connection_inventory(&state, &|_| {})
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(failure.text().code, "inventory.sourcesUnavailable");
+        assert!(Arc::ptr_eq(
+            state.session.read().await.as_ref().unwrap(),
+            &session
+        ));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn discovery_discards_registry_errors_from_a_replaced_session() {
+        let state =
+            ConnectionState::new(Profile::default(), false, Arc::new(RuntimeLogs::default()));
+        let (old, old_server) = discovery_session(true).await;
+        let (replacement, server) = discovery_session(false).await;
+        *state.session.write().await = Some(old);
+        let (current, inventory) = read_connection_inventory(&state, &|_| {
+            *state.session.try_write().unwrap() = Some(replacement.clone());
+        })
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(&current, &replacement));
+        assert!(!inventory.services.is_empty());
+        old_server.abort();
         server.abort();
     }
     #[tokio::test]

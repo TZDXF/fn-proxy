@@ -553,6 +553,9 @@ main {
   background: var(--success-bg);
   color: var(--success-text);
 }
+.badge.warn {
+  color: var(--warning-text);
+}
 .badge.error {
   background: var(--error-bg);
   color: var(--error-text);

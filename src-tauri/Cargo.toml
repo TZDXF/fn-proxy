@@ -46,6 +46,8 @@ rand = "0.8"
 base64 = "0.22"
 hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
+scraper = { version = "0.27.0", default-features = false }
+quick-xml = "0.42"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

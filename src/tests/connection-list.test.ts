@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   running: false,
   connecting: false,
   enabledService: true,
+  reconnecting: false,
 }));
 vi.mock("/app-icon.svg", () => ({ default: "/app-icon.svg" }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => false, invoke: vi.fn() }));
@@ -33,6 +34,10 @@ vi.mock("../lib/workspace", async (original) => {
         },
       ];
       target.connection.connected = state.authenticated;
+      if (state.reconnecting) {
+        target.connection.connected = false;
+        target.connection.message = { code: "logs.reconnecting" };
+      }
       target.proxy.running = state.running;
       target.connecting = state.connecting;
       w.section.value = "connections";
@@ -48,6 +53,7 @@ beforeEach(() => {
     running: false,
     connecting: false,
     enabledService: true,
+    reconnecting: false,
   });
 });
 afterEach(() => {
@@ -104,6 +110,16 @@ describe("rendered connection list proxy controls", () => {
     expect(button(await renderList(), "开启 my-nas 代理")).toContain("disabled");
     state.running = true;
     expect(button(await renderList(), "停止 my-nas 代理")).not.toContain("disabled");
+  });
+
+  it("shows a reconnecting badge while automatic recovery is in progress", async () => {
+    state.reconnecting = true;
+    state.running = true;
+    const table = await renderList();
+    expect(table).toContain("重连中");
+    expect(table).toContain("运行中");
+    state.reconnecting = false;
+    expect(await renderList()).not.toContain("重连中");
   });
 
   it("shows startup progress and disables repeated startup during authentication", async () => {

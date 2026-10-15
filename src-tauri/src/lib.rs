@@ -5,6 +5,7 @@ mod desktop;
 #[cfg(test)]
 mod docker;
 mod error;
+mod favicon;
 mod fn_connect;
 mod inventory;
 mod logging;
@@ -73,6 +74,7 @@ pub fn run() {
             commands::discover_services,
             commands::get_service_inventory,
             commands::probe_service,
+            commands::get_service_icon,
             commands::refresh_session,
             commands::start_proxy,
             commands::update_services,

@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import Icon from "./Icon.vue";
+import { useServiceIcon } from "../lib/serviceIcon";
 
-const props = defineProps<{ url: string }>();
+const props = defineProps<{ connectionId: string; upstream: string; connected: boolean }>();
+const url = useServiceIcon(() => ({
+  connectionId: props.connectionId,
+  upstream: props.upstream,
+  connected: props.connected,
+}));
 const loaded = ref(false);
 const failed = ref(false);
 watch(
-  () => props.url,
+  () => url.value,
   () => {
     loaded.value = false;
     failed.value = false;

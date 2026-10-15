@@ -17,6 +17,7 @@ import {
   discoverySources,
   suggestedLocalPort,
   type Profile,
+  type ConnectionInfo,
   type DiscoveredService,
   type ServiceRoute,
 } from "./lib/types";
@@ -43,6 +44,7 @@ const {
   busy,
   notice,
   proxy,
+  connection,
   discovered,
   inventory,
   probes,
@@ -63,6 +65,8 @@ const nav = computed(() => [
 const title = computed(
   () => nav.value.find((item) => item.id === section.value)?.name ?? t("nav.overview"),
 );
+const isReconnecting = (c: { connection: ConnectionInfo }) =>
+  !c.connection.connected && c.connection.message.code === "logs.reconnecting";
 const runningCount = computed(() => savedConnections.value.filter((c) => c.proxy.running).length);
 const serviceCount = computed(() =>
   savedConnections.value.reduce((total, c) => total + c.profile.services.length, 0),
@@ -317,6 +321,9 @@ async function confirmDelete() {
                 ><span class="status-dot" :class="{ online: c.proxy.running }" />{{
                   c.proxy.running ? t("status.proxyRunning") : t("status.proxyStopped")
                 }}</span
+              ><span v-if="isReconnecting(c)" class="badge warn">{{
+                t("status.reconnecting")
+              }}</span
               ><UiButton variant="ghost" :disabled="!!busy" @click="showServices(c.profile.id)"
                 >{{ t("overview.serviceCount", { count: c.profile.services.length })
                 }}<Icon name="arrow" :size="15" /></UiButton
@@ -378,6 +385,9 @@ async function confirmDelete() {
                     <td>
                       <span :class="['badge', { success: c.proxy.running }]">{{
                         c.proxy.running ? t("common.running") : t("common.stopped")
+                      }}</span>
+                      <span v-if="isReconnecting(c)" class="badge warn">{{
+                        t("status.reconnecting")
                       }}</span>
                     </td>
                     <td>
@@ -490,11 +500,9 @@ async function confirmDelete() {
                     <td>
                       <div class="service-name-cell">
                         <ServiceIcon
-                          :url="
-                            proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
-                              ? `${w.localUrl(route.localPort)}favicon.ico`
-                              : ''
-                          "
+                          :connection-id="selectedConnectionId"
+                          :upstream="route.upstream"
+                          :connected="connection.connected"
                         />
                         <div>
                           <strong>{{ route.name }}</strong
@@ -816,12 +824,19 @@ async function confirmDelete() {
         </template>
         <div class="discovered-list">
           <div class="discovered-row">
-            <div>
-              <strong>{{ t("service.nasMain") }}</strong>
-              <span class="badge">{{ t("service.sourceNas") }}</span>
-              <span class="cell-sub"
-                >:443 · https://{{ profile.fnId.trim().toLowerCase() }}.fnos.net/</span
-              >
+            <div class="service-name-cell">
+              <ServiceIcon
+                :connection-id="selectedConnectionId"
+                :upstream="`https://${profile.fnId.trim().toLowerCase()}.fnos.net/`"
+                :connected="connection.connected"
+              />
+              <div>
+                <strong>{{ t("service.nasMain") }}</strong>
+                <span class="badge">{{ t("service.sourceNas") }}</span>
+                <span class="cell-sub"
+                  >:443 · https://{{ profile.fnId.trim().toLowerCase() }}.fnos.net/</span
+                >
+              </div>
             </div>
             <UiButton
               :disabled="!!busy || connecting || profile.services.some((s) => s.nasPort === 443)"
@@ -835,22 +850,29 @@ async function confirmDelete() {
           </div>
           <template v-if="inventory">
             <div v-for="service in discovered" :key="service.id" class="discovered-row">
-              <div>
-                <strong>{{ service.name }}</strong>
-                <span
-                  v-for="source in discoverySources(service, inventory.entries)"
-                  :key="source.code"
-                  class="badge"
-                >
-                  {{
-                    t(
-                      source.code === "inventory.sourceDocker"
-                        ? "service.sourceDocker"
-                        : "service.sourceNas",
-                    )
-                  }}
-                </span>
-                <span class="cell-sub">:{{ service.nasPort }} · {{ service.upstream }}</span>
+              <div class="service-name-cell">
+                <ServiceIcon
+                  :connection-id="selectedConnectionId"
+                  :upstream="service.upstream"
+                  :connected="connection.connected"
+                />
+                <div>
+                  <strong>{{ service.name }}</strong>
+                  <span
+                    v-for="source in discoverySources(service, inventory.entries)"
+                    :key="source.code"
+                    class="badge"
+                  >
+                    {{
+                      t(
+                        source.code === "inventory.sourceDocker"
+                          ? "service.sourceDocker"
+                          : "service.sourceNas",
+                      )
+                    }}
+                  </span>
+                  <span class="cell-sub">:{{ service.nasPort }} · {{ service.upstream }}</span>
+                </div>
               </div>
               <UiButton
                 :disabled="profile.services.some((s) => s.nasPort === service.nasPort)"

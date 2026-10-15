@@ -51,6 +51,16 @@ describe("NAS main entry placement", () => {
   const manual = app.split('<TabsContent value="manual"')[1]!.split("</TabsContent")[0]!;
   const discovery = app.split('<TabsContent value="discovery"')[1]!.split("</TabsContent")[0]!;
 
+  it("shows website icons for the NAS main entry and discovered services", () => {
+    expect(discovery.match(/<ServiceIcon/g)).toHaveLength(2);
+    expect(discovery).toContain(':connection-id="selectedConnectionId"');
+    expect(discovery).toContain(':upstream="service.upstream"');
+    expect(discovery).toContain(':connected="connection.connected"');
+    expect(discovery).toContain(
+      ':upstream="`https://${profile.fnId.trim().toLowerCase()}.fnos.net/`"',
+    );
+  });
+
   it("offers the NAS main entry in the discovery list instead of the manual form", () => {
     expect(manual).not.toContain("chooseNasMain");
     expect(manual).not.toContain("service.nasMainHint");

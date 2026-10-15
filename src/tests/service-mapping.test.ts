@@ -23,9 +23,12 @@ describe("service mapping actions", () => {
     expect(operations).not.toContain("w.probe");
     expect(operations).not.toContain("w.open");
   });
-  it("loads icons through the local proxy with a default fallback", () => {
+  it("loads authenticated service icons independently of local proxy listeners", () => {
     expect(row).toContain("<ServiceIcon");
-    expect(row).toContain("favicon.ico");
+    expect(row).toContain(':connection-id="selectedConnectionId"');
+    expect(row).toContain(':upstream="route.upstream"');
+    expect(row).toContain(':connected="connection.connected"');
+    expect(row.match(/<ServiceIcon[\s\S]*?\/>/)?.[0]).not.toContain("proxy.listeners");
     const icon = readFileSync(new URL("../components/ServiceIcon.vue", import.meta.url), "utf8");
     expect(icon).toContain('@error="failed = true"');
     expect(icon).toContain('name="server"');
