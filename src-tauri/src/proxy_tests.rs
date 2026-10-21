@@ -105,6 +105,7 @@ async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
     let upstream = url::Url::parse(&format!("http://{}/", service.local_addr().unwrap())).unwrap();
     let entry_hits = Arc::new(AtomicU64::new(0));
     let gate_hits = entry_hits.clone();
+    let styled_hits = entry_hits.clone();
     let permanent_hits = entry_hits.clone();
     let service_app = Router::new()
         .route("/echo", any(echo))
@@ -121,6 +122,27 @@ async fn fixture_with_access(allow_lan_access: bool) -> Fixture {
                         (StatusCode::OK, body).into_response()
                     } else {
                         (StatusCode::FORBIDDEN, RELAY_EXPIRED).into_response()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/styled-recoverable",
+            any(move |headers: HeaderMap| {
+                let hits = styled_hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    if headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
+                        == Some("entry-token=fixture-entry-token")
+                    {
+                        (StatusCode::OK, "fixture recovered service").into_response()
+                    } else {
+                        // The real relay puts its denial after roughly 45 KB of inline styles.
+                        let page = format!(
+                            "<html><title>FN Connect</title><style>/*{}*/</style><p>暂无权限访问该服务...</p></html>",
+                            "x".repeat(45 * 1024)
+                        );
+                        (StatusCode::FORBIDDEN, page).into_response()
                     }
                 }
             }),
@@ -1162,6 +1184,22 @@ async fn fn_connect_expiry_refreshes_credentials_and_retries_empty_get_once() {
     assert!(!log.contains("fixture-entry-token"));
     assert!(!log.contains("fixture-expired-entry-token"));
     assert!(!log.contains(RELAY_EXPIRED));
+}
+#[tokio::test]
+async fn styled_fn_connect_denial_refreshes_credentials_and_retries_once() {
+    let f = fixture().await;
+    let calls = configure_fixture_recovery(&f).await;
+    expire_fixture(&f).await;
+    let response = reqwest::get(f.local.join("styled-recoverable").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "fixture recovered service");
+    assert_eq!(f.entry_hits.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let events = f.recovery_events.lock().unwrap();
+    assert!(events.iter().any(|t| t.code == "logs.requestEntryExpired"));
+    assert!(events.iter().any(|t| t.code == "logs.requestRetry"));
 }
 #[tokio::test]
 async fn missing_session_recovers_before_post_is_sent_and_preserves_body() {

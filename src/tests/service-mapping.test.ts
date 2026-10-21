@@ -9,6 +9,17 @@ const row = app.slice(
 );
 
 describe("service mapping actions", () => {
+  it("places remote issues with local listener status instead of beside the address", () => {
+    const cells = row.split("<td>");
+    const statusCell = cells[4]!.split("</td>")[0]!;
+    expect(statusCell).toContain("<ServiceAvailability");
+    expect(statusCell).toContain(':check="remoteChecks[route.upstream]"');
+    expect(statusCell).toContain("proxy.listeners");
+    expect(cells[2]).not.toContain("<ServiceAvailability");
+    expect(app).toContain(':check="remoteChecks[service.upstream]"');
+    expect(row.indexOf("<ServiceAvailability")).toBeLessThan(row.indexOf("proxy.listeners"));
+    expect(app).toContain('@click="recheckRemote"');
+  });
   it("provides named copy and open actions for both addresses", () => {
     for (const action of ["copyLocal", "copyRemote", "openLocal", "openRemote", "edit", "delete"]) {
       expect(row).toContain(`:title="t('actions.${action}', { name: route.name })"`);

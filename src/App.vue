@@ -8,6 +8,7 @@ import SettingsPage from "./components/SettingsPage.vue";
 import { Label, TabsRoot, TabsList, TabsTrigger, TabsContent } from "reka-ui";
 import Icon from "./components/Icon.vue";
 import ServiceIcon from "./components/ServiceIcon.vue";
+import ServiceAvailability from "./components/ServiceAvailability.vue";
 import UiButton from "./components/ui/UiButton.vue";
 import UiInput from "./components/ui/UiInput.vue";
 import UiSwitch from "./components/ui/UiSwitch.vue";
@@ -24,6 +25,7 @@ import {
 import { useWorkspace } from "./lib/workspace";
 import { localize } from "./lib/text";
 import { createUpdates } from "./lib/updates";
+import { useServiceAvailability } from "./lib/serviceAvailability";
 
 const { t, locale } = useI18n({ useScope: "global" });
 const desktop = isTauri();
@@ -47,7 +49,6 @@ const {
   connection,
   discovered,
   inventory,
-  probes,
   editor,
   editing,
   logs,
@@ -55,6 +56,24 @@ const {
   settingsReady,
   anyProxyRunning,
 } = w;
+const {
+  checks: remoteChecks,
+  checking: checkingRemote,
+  recheck: recheckRemote,
+} = useServiceAvailability(() => ({
+  connectionId: selectedConnectionId.value,
+  connected: connection.value.connected && !connecting.value,
+  revision:
+    w.connections.find((c) => c.profile.id === selectedConnectionId.value)?.sessionRevision ?? 0,
+  routes: [
+    ...profile.value.services,
+    ...discovered.value.map((service) => ({
+      ...service,
+      localPort: service.nasPort,
+      enabled: true,
+    })),
+  ],
+}));
 const nav = computed(() => [
   { id: "overview", name: t("nav.overview"), icon: "grid" },
   { id: "connections", name: t("nav.connections"), icon: "link" },
@@ -468,7 +487,14 @@ async function confirmDelete() {
               <h2>
                 {{ t("service.added") }} <span class="count">{{ profile.services.length }}</span>
               </h2>
-              <span class="muted">{{ profile.fnId }}</span>
+              <div class="row-actions">
+                <span class="muted">{{ profile.fnId }}</span>
+                <UiButton
+                  :disabled="!connection.connected || checkingRemote || !!busy"
+                  @click="recheckRemote"
+                  ><Icon name="refresh" :size="15" />{{ t("service.checkRemote") }}</UiButton
+                >
+              </div>
             </div>
             <div v-if="!profile.services.length" class="empty-state">
               <Icon name="server" :size="36" />
@@ -546,19 +572,21 @@ async function confirmDelete() {
                       </div>
                     </td>
                     <td>
-                      <span
-                        v-if="
-                          proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
-                        "
-                        class="badge success"
-                        >{{ t("status.listening") }}</span
-                      ><span
-                        v-else-if="probes[route.id]"
-                        :class="['badge', probes[route.id]?.reachable ? 'success' : 'error']"
-                        >HTTP {{ probes[route.id]?.status }}</span
-                      ><span v-else class="badge">{{
-                        route.enabled ? t("status.pending") : t("status.disabled")
-                      }}</span>
+                      <div class="service-status">
+                        <ServiceAvailability
+                          :connected="connection.connected"
+                          :check="remoteChecks[route.upstream]"
+                        />
+                        <span
+                          v-if="
+                            proxy.listeners.some((l) => l.localUrl === w.localUrl(route.localPort))
+                          "
+                          class="badge success"
+                          >{{ t("status.listening") }}</span
+                        ><span v-else class="badge">{{
+                          route.enabled ? t("status.pending") : t("status.disabled")
+                        }}</span>
+                      </div>
                     </td>
                     <td>
                       <UiSwitch
@@ -809,6 +837,10 @@ async function confirmDelete() {
           <strong>{{ profile.fnId }}</strong
           ><UiButton :disabled="!!busy || connecting" @click="w.discover()"
             ><Icon name="refresh" />{{ busy ? t("common.reading") : t("service.read") }}</UiButton
+          ><UiButton
+            :disabled="!connection.connected || checkingRemote || !!busy"
+            @click="recheckRemote"
+            >{{ t("service.checkRemote") }}</UiButton
           >
         </div>
         <div v-if="!inventory" class="empty-state compact">
@@ -874,15 +906,21 @@ async function confirmDelete() {
                   <span class="cell-sub">:{{ service.nasPort }} · {{ service.upstream }}</span>
                 </div>
               </div>
-              <UiButton
-                :disabled="profile.services.some((s) => s.nasPort === service.nasPort)"
-                @click="chooseService(service)"
-                >{{
-                  profile.services.some((s) => s.nasPort === service.nasPort)
-                    ? t("common.added")
-                    : t("common.select")
-                }}</UiButton
-              >
+              <div class="service-status">
+                <ServiceAvailability
+                  :connected="connection.connected"
+                  :check="remoteChecks[service.upstream]"
+                />
+                <UiButton
+                  :disabled="profile.services.some((s) => s.nasPort === service.nasPort)"
+                  @click="chooseService(service)"
+                  >{{
+                    profile.services.some((s) => s.nasPort === service.nasPort)
+                      ? t("common.added")
+                      : t("common.select")
+                  }}</UiButton
+                >
+              </div>
             </div>
           </template>
         </div></TabsContent

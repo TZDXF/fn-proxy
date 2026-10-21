@@ -1106,27 +1106,45 @@ pub async fn probe_service(
         .clone()
         .ok_or_else(|| error("workspace.loginRequired"))?;
     let url = validate_upstream(&route.upstream, &session.info.fn_id)?;
-    let token = session.entry_token.read().await.to_string();
+    let token = Zeroizing::new(session.entry_token.read().await.to_string());
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(20))
         .build()?;
-    let response = client
+    Ok(probe_remote(&client, url, &token).await)
+}
+async fn probe_remote(client: &reqwest::Client, url: url::Url, token: &str) -> RouteProbe {
+    let response = match client
         .get(url)
         .header("Cookie", format!("entry-token={token}"))
         .send()
-        .await?;
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return RouteProbe {
+                status: 0,
+                reachable: false,
+                message: Text::new(if error.is_timeout() {
+                    "workspace.probeTimeout"
+                } else {
+                    "workspace.probeUnavailable"
+                }),
+            };
+        }
+    };
     let status = response.status().as_u16();
-    Ok(RouteProbe {
+    RouteProbe {
         status,
         reachable: (200..400).contains(&status),
         message: Text::new(match status {
             200..=399 => "workspace.probeReachable",
             401 => "workspace.probeUnauthorized",
             403 => "workspace.probeForbidden",
+            404 | 410 => "workspace.probeNotFound",
             _ => "workspace.probeFailed",
         }),
-    })
+    }
 }
 #[tauri::command]
 pub async fn refresh_session(
@@ -1458,6 +1476,80 @@ pub fn shutdown(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn remote_probes_classify_responses_without_following_redirects_or_exposing_credentials()
+    {
+        use axum::{extract::Path, http::HeaderMap, routing::get, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/{code}",
+            get(|Path(code): Path<u16>, headers: HeaderMap| async move {
+                assert_eq!(headers["cookie"], "entry-token=fixture-secret");
+                (
+                    axum::http::StatusCode::from_u16(code).unwrap(),
+                    [("location", "https://untrusted.invalid/")],
+                    "fixture-private-response",
+                )
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        for (status, message, reachable) in [
+            (200, "workspace.probeReachable", true),
+            (302, "workspace.probeReachable", true),
+            (401, "workspace.probeUnauthorized", false),
+            (403, "workspace.probeForbidden", false),
+            (404, "workspace.probeNotFound", false),
+            (410, "workspace.probeNotFound", false),
+            (502, "workspace.probeFailed", false),
+        ] {
+            let url = format!("http://{address}/{status}").parse().unwrap();
+            let probe = probe_remote(&client, url, "fixture-secret").await;
+            assert_eq!(probe.status, status);
+            assert_eq!(probe.reachable, reachable);
+            assert_eq!(probe.message.code, message);
+            let serialized = serde_json::to_string(&probe).unwrap();
+            assert!(!serialized.contains("fixture-secret"));
+            assert!(!serialized.contains("fixture-private-response"));
+            assert!(!serialized.contains("untrusted.invalid"));
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn remote_probe_transport_failures_return_safe_list_statuses() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url: url::Url = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+        // The TCP listener never serves an HTTP response, forcing the request deadline.
+        let timeout = probe_remote(&client, url.clone(), "fixture-secret").await;
+        assert_eq!(timeout.status, 0);
+        assert!(!timeout.reachable);
+        assert_eq!(timeout.message.code, "workspace.probeTimeout");
+        drop(listener);
+        // Windows can delay a refused TCP connection; do not reuse the tiny HTTP timeout.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let refused = probe_remote(&client, url, "fixture-secret").await;
+        assert_eq!(refused.status, 0);
+        assert!(!refused.reachable);
+        assert_eq!(refused.message.code, "workspace.probeUnavailable");
+    }
 
     fn manager() -> AppState {
         AppState::new(

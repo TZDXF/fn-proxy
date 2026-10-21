@@ -269,7 +269,9 @@ async fn target_headers(
     }
     Ok(outgoing)
 }
-const ERROR_PREFIX_LIMIT: usize = 16 * 1024;
+// FN Connect denial pages include roughly 45 KB of inline styles before the message.
+// Keep inspection bounded while including the actual authorization error text.
+const ERROR_PREFIX_LIMIT: usize = 64 * 1024;
 fn relay_expiry_message(text: &str) -> bool {
     static TAGS: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]*>").unwrap());

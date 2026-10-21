@@ -140,6 +140,20 @@
     "enable": "Enable service",
     "save": "Save service",
     "read": "Discover services",
+    "checkRemote": "Check remote URLs",
+    "remote": {
+      "checking": "Checking",
+      "unchecked": "Not checked",
+      "available": "Remote reachable",
+      "unavailable": "Remote unreachable",
+      "timeout": "Connection timed out",
+      "notFound": "Address not found",
+      "unauthorized": "App sign-in required",
+      "forbidden": "Access denied",
+      "failed": "Remote service error",
+      "unknown": "Check incomplete",
+      "checkingHint": "Checking the remote entry. A local listener does not indicate remote service availability."
+    },
     "notRead": "No services loaded yet",
     "noNas": "NAS not connected",
     "noAvailable": "No services available to add",
@@ -373,6 +387,10 @@
       "probeReachable": "The service entry is reachable; specific APIs may still require the app's own authentication.",
       "probeUnauthorized": "The service responded, but this app may require its own sign-in or API key.",
       "probeForbidden": "Access denied. Check entry credentials and app permissions.",
+      "probeNotFound": "The remote URL returned 404 or 410. Check whether the service was removed or its entry changed.",
+      "probeTimeout": "The remote entry connection timed out. Check the network or remote URL and try again.",
+      "probeUnavailable": "Cannot connect to the remote entry. Check the network, service and remote URL, then try again.",
+      "probeUnknown": "The check did not complete. Confirm the NAS connection and try again; this does not establish that the remote URL is invalid.",
       "probeFailed": "The service returned a non-success status. Check the NAS service."
     },
     "recovery": {

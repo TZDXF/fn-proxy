@@ -140,6 +140,20 @@
     "enable": "启用服务",
     "save": "保存服务",
     "read": "读取服务",
+    "checkRemote": "检测远程地址",
+    "remote": {
+      "checking": "检测中",
+      "unchecked": "等待检测",
+      "available": "远程可达",
+      "unavailable": "远程不可达",
+      "timeout": "连接超时",
+      "notFound": "地址不存在",
+      "unauthorized": "需要应用登录",
+      "forbidden": "访问被拒绝",
+      "failed": "远程服务异常",
+      "unknown": "检测未完成",
+      "checkingHint": "正在检测远程入口；本地监听状态不代表远程服务可用。"
+    },
     "notRead": "尚未读取服务",
     "noNas": "未连接 NAS",
     "noAvailable": "暂无可添加服务",
@@ -373,6 +387,10 @@
       "probeReachable": "服务入口可达；具体 API 可能还需要应用自己的认证",
       "probeUnauthorized": "已收到服务响应，但该应用可能需要自身登录或 API Key",
       "probeForbidden": "访问被拒绝：需检查入口凭据及应用权限",
+      "probeNotFound": "远程地址返回 404 或 410，请检查服务是否已移除或入口是否已变更",
+      "probeTimeout": "连接远程入口超时，请检查网络或远程地址后重新检测",
+      "probeUnavailable": "无法连接远程入口，请检查网络、服务和远程地址后重新检测",
+      "probeUnknown": "检测未完成，请确认 NAS 连接后重新检测；无法据此判断远程地址是否失效",
       "probeFailed": "服务返回非成功状态，请检查 NAS 服务"
     },
     "recovery": {
