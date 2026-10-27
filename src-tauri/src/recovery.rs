@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 pub const MAX_ATTEMPTS: usize = 3;
 pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_WAIT: Duration = Duration::from_secs(70);
+const RECONNECT_BACKOFF: [Duration; 2] = [Duration::from_secs(5), Duration::from_secs(30)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryReason {
@@ -243,7 +244,7 @@ where
         &mut operation,
         diagnostic,
         ATTEMPT_TIMEOUT,
-        [Duration::from_secs(2), Duration::from_secs(5)],
+        RECONNECT_BACKOFF,
     )
     .await
 }
@@ -417,6 +418,13 @@ mod tests {
             [Duration::from_millis(1); 2],
         )
         .await
+    }
+    #[test]
+    fn reconnect_backoff_covers_tens_of_seconds_of_entry_instability() {
+        assert_eq!(
+            RECONNECT_BACKOFF,
+            [Duration::from_secs(5), Duration::from_secs(30)]
+        );
     }
     #[tokio::test]
     async fn transient_failures_retry_with_backoff_then_succeed() {

@@ -27,6 +27,33 @@ pub enum AppError {
     #[error("timeout: {0}")]
     Timeout(#[from] tokio::time::error::Elapsed),
 }
+fn connect_category(error: &reqwest::Error) -> &'static str {
+    let category = connect_source_category(std::error::Error::source(error));
+    if category == "connect" && error.is_timeout() {
+        "connect_timeout"
+    } else {
+        category
+    }
+}
+
+/// Inspect typed sources only. Error strings may contain addresses, certificates or response data.
+fn connect_source_category(mut source: Option<&(dyn std::error::Error + 'static)>) -> &'static str {
+    while let Some(error) = source {
+        if error.downcast_ref::<rustls::Error>().is_some() {
+            return "connect_tls";
+        }
+        if let Some(error) = error.downcast_ref::<std::io::Error>() {
+            match error.kind() {
+                std::io::ErrorKind::ConnectionRefused => return "connect_refused",
+                std::io::ErrorKind::TimedOut => return "connect_timeout",
+                _ => {}
+            }
+        }
+        source = error.source();
+    }
+    "connect"
+}
+
 impl AppError {
     pub fn at(self, stage: &'static str) -> Self {
         Self::Stage {
@@ -50,8 +77,8 @@ impl AppError {
     /// Allowlisted categories only: raw errors may contain URLs, credentials or response data.
     pub fn category(&self) -> &'static str {
         match self.cause() {
+            Self::Http(e) if e.is_connect() => connect_category(e),
             Self::Http(e) if e.is_timeout() => "timeout",
-            Self::Http(e) if e.is_connect() => "connect",
             Self::Http(e) if e.status().is_some() => "http_status",
             Self::Http(_) => "http_transport",
             Self::Timeout(_) => "timeout",
@@ -265,6 +292,37 @@ mod tests {
             tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
         ));
         assert!(e.retryable());
+    }
+    #[test]
+    fn connect_sources_have_specific_safe_categories() {
+        for (kind, category) in [
+            (std::io::ErrorKind::ConnectionRefused, "connect_refused"),
+            (std::io::ErrorKind::TimedOut, "connect_timeout"),
+        ] {
+            let source = std::io::Error::new(kind, "fixture-address fixture-secret");
+            assert_eq!(connect_source_category(Some(&source)), category);
+        }
+        let source = rustls::Error::General("fixture-certificate fixture-secret".into());
+        assert_eq!(connect_source_category(Some(&source)), "connect_tls");
+        let source = std::io::Error::other("fixture-address fixture-secret");
+        assert_eq!(connect_source_category(Some(&source)), "connect");
+    }
+    #[tokio::test]
+    async fn refused_connection_classification_and_logs_are_safe() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = reqwest::get(format!("http://{address}/private?token=fixture-secret"))
+            .await
+            .unwrap_err();
+        let error = AppError::from(error).at("entry_handshake");
+        assert_eq!(error.category(), "connect_refused");
+        assert!(error.retryable());
+        let log = serde_json::to_string(&error.diagnostic(1)).unwrap();
+        assert!(log.contains("connect_refused"));
+        assert!(!log.contains(&address.to_string()));
+        assert!(!log.contains("fixture-secret"));
+        assert!(!log.contains("private"));
     }
     #[tokio::test]
     async fn http_status_classification_and_logs_are_safe() {
